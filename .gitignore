@@ -1,0 +1,23 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# Ignore data folder
+Data/
+
+# Ignore output folder (with figures and tables)
+Output/
+
+**/figure-html 
+  # prepend a pattern with a double asterisk to match directories anywhere in the repository
+
+# Ignore certain file types
+*.html
+*.docx
+
+# Ignore figures
+*.png
+*.jpeg
+*.pdf
+*.tiff

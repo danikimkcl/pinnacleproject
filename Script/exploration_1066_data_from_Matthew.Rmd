@@ -1,0 +1,216 @@
+---
+title: "What's in the data files from Matthew"
+output: html_document
+date: "2022-11-16"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE)
+```
+
+### Open libraries
+
+```{r}
+library(epiR)       # for epi.conf() to calculate CIs for prevalence
+library(haven)      # for opening Stata dta files and converting relevant variables into factors as_factor()
+library(here)       # for easy file referencing by using the top-level directory of a file project
+library(knitr)
+library(labelled)   # for var_label() to get variable labels
+library(openxlsx)   # for write.xlsx()
+library(readxl)     # for read_excel()
+library(tableone)
+library(tidyverse)
+```
+
+What is the top-level of current project?
+```{r}
+here::here()
+```
+
+## Open data
+
+```{r}
+# First, open source codes which contain codes to process data:
+source(here::here("Script", "Functions", "Data process", "func_open_and_process_data.R"))
+```
+
+```{r}
+# here::here("Data", "raw data", "baseline survey", "prevalence_survey_data_1_3.dta")
+# using here() means that file paths can be created from any physical place as long as fold structure is equivalent
+
+##############################
+#### Incidence phase data ####
+##############################
+
+path = here::here("Data", "raw data", "fu folder from Matthew", "incidence cohort (all survey outcomes)", "other countries", "full follow up_1_2.dta")
+data_full_fu12 = open_and_process_data(path, "dta")
+
+path = here::here("Data", "raw data", "fu folder from Matthew", "incidence cohort (all survey outcomes)", "other countries", "person_years1_1.dta")
+data_personyrs11 = open_and_process_data(path, "dta")
+
+path = here::here("Data", "raw data", "fu folder from Matthew", "incidence cohort (all survey outcomes)", "other countries", "baseline data for incidence sites (survey outcomes) 1_0.sav")
+baselinedat_inc = open_and_process_data(path, "sav")
+
+path = here::here("Data", "raw data", "fu folder from Matthew", "incidence cohort (all survey outcomes)", "other countries", "status_outcome (survey cohort)_1_0.sav")
+status_outcome = open_and_process_data(path, "sav")
+
+##############################
+####### Mortality data #######
+##############################
+
+path = here::here("Data", "raw data", "fu folder from Matthew", "specific outcomes", "mortality", "mortality_outcome1_1.dta")
+mortality_outcome = open_and_process_data(path, "dta")
+
+path = here::here("Data", "raw data", "fu folder from Matthew", "specific outcomes", "mortality", "status_outcome (mortality cohort)_1_0.dta")
+status_outcome_mortality_cohort = open_and_process_data(path, "dta")
+
+path = here::here("Data", "raw data", "fu folder from Matthew", "specific outcomes", "mortality", "baseline_survey_for_mortality_1_0.sav")
+baselinedat_mor = open_and_process_data(path, "sav")
+
+#####################
+####### Other #######
+#####################
+
+path = here::here("Data", "raw data", "fu folder from Matthew", "cdem1066_CR_dfdeath_outcome1_1.sav")
+cdem1066 = open_and_process_data(path, "sav")
+```
+
+## View data for the Incidence cohort
+
+14,896 participants appeared to be included in the incidence cohort. Of these, 10743 were either reinterviewed or refused interview; 2449 died; 1704 were not traced. 
+
+### Data full follow-up
+
+This dataset has the same (or similar) variables as the baseline dataset. The variable names are also the same with a 'f_' prefix.
+
+However, dataset only includes 10,549 observations - why?
+
+```{r}
+test = data_full_fu12 %>% 
+  select(HOUSEID, PARTICID, centreid) %>% 
+  left_join(status_outcome, by = c("HOUSEID", "PARTICID", "centreid"))
+
+summary(as.factor(test$Statusfu))
+```
+9951 were interviewed; 3 not traced; (i.e. particpants who died, refused to interview, uncontactable or not recorded are excluded from incidence data) Were the 595 remaining new participants added at the incidence phase?
+
+### Person-years
+
+```{r}
+kable(head(data_personyrs11))
+```
+
+The person-years data appears to contain the following data for 14,896 participants included in the incidence phase dataset:
+
+ - b_DATE: date of interview at baseline
+ - fu_DATE: date of interview at follow-up
+ - death_date: date of death
+ - censor_days: interval in days between baseline interview date and date of death or follow-up (*if missing both what date was used??*)
+ - censor_yr: interval in years between baseline itnerview date and date of death or follow-up (*if missing both what date was used??*)
+ - dead: dead by follow-up?
+    - 0 alive at follow-up - reinterviewed or refused
+    - 1 dead
+ - dead2: vital status, including 'not known (not traced)'
+    - 0 found alive
+    - 1 dead
+    - 9 vital status not determined (uncontactable/not traced)'
+ - vital_ascertainment
+    - 0 no
+    - 1 yes
+    
+**Counts**
+    
+```{r}
+summary(as.factor(data_personyrs11$dead))
+summary(as.factor(data_personyrs11$dead2))
+summary(as.factor(data_personyrs11$vital_ascertained))
+```
+**Summary**
+
+```{r}
+summary(data_personyrs11)
+```
+
+### Status outcome
+
+```{r}
+kable(head(status_outcome))
+```
+
+The `Statusfu` variable shows status at follow-up, coded as:
+
+ - 1 Died
+ - 2 Refused
+ - 3 Interviewed
+ - 4 Uncontactable 
+ - 5 Not traced
+ - 9 Not recorded
+ 
+Among the 14,896 participants in the incidence phase dataset, the follow-up status at the incidence wave is:
+
+```{r}
+table(as.factor(status_outcome$Statusfu))
+```
+ 
+ 
+## View data for the mortality cohort
+
+15,901 participants appeared to be included in the mortality cohort. Of these, 10546 were interviewed; 791 refused interview; 2603 died; 873 were uncontactable; 630 not traced; and 458 not recorded.
+
+### Baseline data for mortality cohort
+
+This is the baseline dataset for the mortality cohort. However, dataset includes 16,032 observations - why? where do the extra 131 participants come from?
+
+```{r}
+test = baselinedat_mor %>% 
+  select(HOUSEID, PARTICID, centreid) %>% 
+  left_join(status_outcome_mortality_cohort, by = c("HOUSEID", "PARTICID", "centreid"))
+
+summary(as.factor(test$Statusfu))
+```
+
+### Mortality outcome
+
+```{r}
+kable(head(mortality_outcome))
+```
+
+The mortality outcome has the same variables included in the person-years data for the incidence phase (see person years dataset above) and contain the follow-up data and vital status for the 15,901 participants included in the mortality cohort:
+    
+**Counts**
+    
+```{r}
+summary(as.factor(mortality_outcome$dead))
+summary(as.factor(mortality_outcome$dead2))
+summary(as.factor(mortality_outcome$vital_ascertained))
+```
+
+**Summary**
+
+```{r}
+summary(mortality_outcome)
+```
+
+### Status outcome
+
+```{r}
+kable(head(status_outcome_mortality_cohort))
+```
+
+The `Statusfu` variable shows status at follow-up, coded as:
+
+ - 1 Died
+ - 2 Refused
+ - 3 Interviewed
+ - 4 Uncontactable 
+ - 5 Not traced
+ - 9 Not recorded
+ 
+Among the 15,701 participants in the mortality dataset, the follow-up status at the incidence wave is:
+
+```{r}
+table(as.factor(status_outcome_mortality_cohort$Statusfu))
+```
+ 

@@ -1,3 +1,5 @@
+## List of files and folders to exclude
+
 .Rproj.user
 .Rhistory
 .RData

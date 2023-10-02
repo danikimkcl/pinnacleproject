@@ -114,6 +114,7 @@ summary(mydata$PARK)
 ```{r}
 summary(mydata$NEO14G)
 ```
+
 Define the `pnism` variable: 
 ```{r}
 mydata = mydata %>% 
@@ -123,12 +124,14 @@ mydata = mydata %>%
 
 summary(as.factor(mydata$pnism1))
 ```
+
 ```{r}
 mydata = mydata %>% 
   mutate(pnism2 = if_else(((NEO14G=="somewhat slow movements" | NEO14G=="very slow movements") & ((!NEO4E=="no tremor") | (!NEO4F=="no tremor"))), 1, 0))
 
 summary(as.factor(mydata$pnism2))
 ```
+
 ```{r}
 mydata = mydata %>% 
   mutate(pnism = if_else(pnism1==1 | pnism2==1, 1, pnism1)) %>% 

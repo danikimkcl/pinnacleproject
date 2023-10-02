@@ -1,0 +1,353 @@
+---
+title: "Systematic review and meta-analysis of the prevalence of PD in Latin America"
+output: html_document
+date: "2023-04-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## open and process data
+
+Open libraries
+
+```{r libraries}
+library(here)
+library(meta)
+library(readxl)
+library(tidyverse)
+```
+
+Open data
+
+```{r open-data}
+data = read_excel("C:/Users/k2258693/OneDrive - King's College London/Desktop/PINNACLE project/5 Paper Systematic review PD prevalence/Data extraction table COMBINED.xlsx")
+```
+
+Process data
+
+```{r}
+# Rename variables
+colnames(data) = c("studyid", "author", "year", "study_name", "study_type", "meanage", "minage", "sexpct", "country", "urbanrural", "subgroup", "subgroup_level", "size", "diagnosis", "n_pd", "N_pd", "pct_pd", "prev_pd", "n_pnism", "N_pnism", "pct_pnism", "prev_pnism", "inc_n_pd", "inc_Nyears_pd", "inc_per_100kyears_pd", "inc_per_100k_pd", "stats", "jbi_quality",  "comments")
+
+# Select relevant variables
+data = data %>% 
+  select(studyid, author, year, study_type, meanage, minage, sexpct, country, urbanrural, subgroup, subgroup_level, size, ends_with("pd"), ends_with("pnism"), stats, jbi_quality)
+
+# Remove first row
+data = data[-1, ]
+
+# Process new variables
+data = data %>% 
+  mutate(study = paste0(author, ", ", year, " (", country, ")")) %>% # create new study variable
+# Convert 'n/a' into NA and columns into numeric variables
+  mutate(across(ends_with("pd"), ~ifelse(.x=="n/a", NA_character_, .))) %>% 
+  mutate(across(ends_with("pd"), as.numeric)) %>% 
+  mutate(across(ends_with("pnism"), ~ifelse(.x=="n/a", NA_character_, .))) %>% 
+  mutate(across(ends_with("pnism"), as.numeric))
+
+# Relabel 'Door-to-door' studies as 'Cohort study'
+data = data %>% 
+  mutate(study_type = factor(case_when(study_type == "Door-to-door" ~ "Cohort study", 
+                                       study_type == "Adminstrative" ~ "Administrative",
+                                       TRUE ~ study_type),
+                             levels = c("Cohort study", "Administrative")))
+
+# Exclude certain data from the 10/66 study - specifically, the rural and urban data from Peru and Mexico (these have been combined)
+data = data %>% 
+  filter(!(author=="Llibre-Guerra" & (country=="Peru" | country=="Mexico") & (urbanrural=="Urban" | urbanrural=="Rural")))
+
+# Create minimum age group categories
+data = data %>% 
+  mutate(minage_cat = factor(case_when(is.na(minage) ~ "Missing",
+                                minage<65 ~ "<65",
+                                TRUE ~ "\u226565"), levels=c("<65", "\u226565", "Missing")))
+
+# Create min age column
+data = data %>% 
+  separate(meanage, into=c("mean", "x"), sep="\\(") %>% 
+  select(-x)
+
+# Filter data for 'total' results
+data_tot = data %>% 
+  filter(subgroup=="Total") %>% 
+  #filter(stats=="Crude results") %>% 
+  arrange(studyid)
+
+# Filter data for 'sex' results
+data_sex = data %>% filter(subgroup=="Sex")
+```
+
+Compute n and N from data (skip step as already did manual calculation)
+
+```{r, include=FALSE}
+# Process new variables
+data = data %>% 
+  separate(pct_pd, into = c("prop_pd", "prop_ci_pd"), sep = "[()]", extra = "merge") %>% 
+  separate(prev_pd, into = c("prev_pd", "prev_ci_pd"), sep = "[()]", extra = "merge") %>% 
+  separate(pct_pnism, into = c("prop_pnism", "prop_ci_pnism"), sep = "[()]", extra = "merge") %>% 
+  separate(prev_pnism, into = c("prev_pnism", "prev_ci_pnism"), sep = "[()]", extra = "merge") 
+
+### PD
+x = subset(data_tot, (is.na(data_tot[, "N_pd"]) & is.na(data_tot[, "prop_pd"]) & !is.na(data_tot[, "prev_pd"]))) 
+x$N_pd = (x$n_pd*100000)/x$prev_pd
+
+y = subset(data_tot, (is.na(data_tot[, "N_pd"]) & !is.na(data_tot[, "prop_pd"]) & is.na(data_tot[, "prev_pd"]))) 
+y$N_pd = (y$n_pd*100)/y$prop_pd
+
+z = subset(data_tot, (is.na(data_tot[, "n_pd"]) & is.na(data_tot[, "prop_pd"]) & !is.na(data_tot[, "prev_pd"]))) 
+z$n_pd = (z$N_pd*z$prev_pd)/100000
+
+w = subset(data_tot, (is.na(data_tot[, "n_pd"]) & !is.na(data_tot[, "prop_pd"]) & is.na(data_tot[, "prev_pd"]))) 
+w$n_pd = (w$N_pd*w$prop_pd)/100
+
+## Combine results
+results_pd = bind_rows(x, y, z, w, data_tot) %>% 
+  arrange(studyid) %>% 
+  group_by(study, country, urbanrural) %>% 
+  mutate(rowid = row_number()) %>% 
+  filter(rowid==1) %>% 
+  select(-ends_with("pnism"))
+```
+
+## Meta-analysis and forest plots
+
+### Prevalence
+
+#### Parkinson's disease
+
+```{r}
+results_pd = data_tot %>% 
+  filter(!is.na(n_pd)) %>% 
+  mutate(prev = n_pd/N_pd*100000) %>% 
+  arrange(desc(prev))
+  #arrange(country)
+
+meta_pd = meta::metaprop(event = n_pd, 
+                         n = N_pd, 
+                         studlab = study, 
+                         pscale=100000, 
+                         data = results_pd, 
+                         subgroup=study_type, 
+                         common=FALSE,
+                         random=TRUE,  
+                         subgroup.name = "Study type")
+
+summary(meta_pd)
+```
+
+```{r}
+png("pd_prev_plot.png", width = 30, height = 20, units = "cm", res=500)
+
+forest(meta_pd)
+
+dev.off()
+```
+
+Stratified by sex
+
+```{r}
+results_pd_sex = data_sex %>% 
+  #filter(study_type=="Cohort study") %>% 
+  filter(!is.na(N_pd)) %>% 
+  mutate(prev = n_pd/N_pd*100000) %>% 
+  arrange(desc(prev))
+
+meta_pd_sex = meta::metaprop(event = n_pd, 
+                         n = N_pd, 
+                         studlab = study, 
+                         pscale=100000, 
+                         data = results_pd_sex, 
+                         subgroup=subgroup_level, 
+                         common=FALSE,
+                         random=TRUE,  
+                         subgroup.name = "Sex",
+                         overall=FALSE,
+                         overall.hetstat = FALSE)
+
+summary(meta_pd_sex)
+```
+
+```{r}
+png("pd_sex_prev_plot.png", width = 30, height = 25, units = "cm", res=500)
+
+forest(meta_pd_sex)
+
+dev.off()
+```
+Stratified by minimum age
+
+```{r}
+results_pd_age = data_tot %>% 
+  filter(study_type=="Cohort study") %>% 
+  filter(!is.na(n_pd)) %>% 
+  mutate(prev = n_pd/N_pd*100000) %>% 
+  arrange(desc(prev))
+
+results_pd_age = data_tot %>% 
+  filter(!is.na(n_pd)) %>% 
+  mutate(prev = n_pd/N_pd*100000) %>% 
+  arrange(desc(prev))
+
+meta_pd_age = meta::metaprop(event = n_pd, 
+                         n = N_pd, 
+                         studlab = study, 
+                         pscale=100000, 
+                         data = results_pd_age, 
+                         subgroup=minage_cat, 
+                         common=FALSE,
+                         random=TRUE,  
+                         subgroup.name = "Minimum age",
+                         overall=FALSE,
+                         overall.hetstat = FALSE)
+
+summary(meta_pd_age)
+
+png("pd_age_prev_plot1.png", width = 30, height = 25, units = "cm", res=500)
+
+forest(meta_pd_age)
+
+dev.off()
+```
+
+Meta-regression by mean age
+
+```{r}
+m.gen.reg = meta::metareg(meta_pd, ~min)
+```
+
+Stratified by region
+```{r}
+meta_pd = meta::metaprop(event = n_pd, 
+                         n = N_pd, 
+                         studlab = study, 
+                         pscale=100000, 
+                         data = results_pd, 
+                         subgroup=urbanrural, 
+                         common=FALSE,
+                         random=TRUE,  
+                         subgroup.name = "Area type",
+                         overall=FALSE,
+                         overall.hetstat = FALSE)
+
+summary(meta_pd)
+
+png("pd_region_prev_plot.png", width = 30, height = 25, units = "cm", res=500)
+
+forest(meta_pd)
+
+dev.off()
+```
+
+#### Parkinsonism
+
+```{r}
+results_pnism = data_tot %>% 
+  filter(!is.na(n_pnism)) %>% 
+  mutate(prev = n_pnism/N_pnism*100000) %>% 
+  arrange(desc(prev))
+
+meta_pnism = meta::metaprop(event = n_pnism, 
+                         n = N_pnism, 
+                         studlab = study, 
+                         pscale=100000, 
+                         data = results_pnism, 
+                         subgroup=study_type, 
+                         common=FALSE,
+                         random=TRUE,  
+                         subgroup.name = "Study type")
+
+summary(meta_pnism)
+```
+
+```{r}
+png("pnism_prev_plot.png", width = 30, height = 14, units = "cm", res=500)
+
+forest(meta_pnism)
+
+dev.off()
+```
+
+Stratified by sex
+
+```{r}
+results_pnism_sex = data_sex %>% 
+  #filter(study_type=="Cohort study") %>% 
+  filter(!is.na(N_pnism)) %>% 
+  mutate(prev = n_pnism/N_pnism*100000) %>% 
+  arrange(desc(prev))
+
+meta_pnism_sex = meta::metaprop(event = n_pnism, 
+                         n = N_pnism, 
+                         studlab = study, 
+                         pscale=100000, 
+                         data = results_pnism_sex, 
+                         subgroup=subgroup_level, 
+                         common=FALSE,
+                         random=TRUE,  
+                         subgroup.name = "Sex",
+                         overall=FALSE,
+                         overall.hetstat = FALSE)
+
+summary(meta_pnism_sex)
+```
+
+```{r}
+png("pnism_sex_prev_plot.png", width = 30, height = 18, units = "cm", res=500)
+
+forest(meta_pnism_sex)
+
+dev.off()
+```
+
+Stratified by region
+```{r}
+meta_pnism = meta::metaprop(event = n_pnism, 
+                         n = N_pnism, 
+                         studlab = study, 
+                         pscale=100000, 
+                         data = results_pnism, 
+                         subgroup=urbanrural, 
+                         common=FALSE,
+                         random=TRUE,  
+                         subgroup.name = "Area type",
+                         overall=FALSE,
+                         overall.hetstat = FALSE)
+
+summary(meta_pnism)
+
+png("pnism_region_prev_plot.png", width = 30, height = 15, units = "cm", res=500)
+
+forest(meta_pnism)
+
+dev.off()
+```
+
+### Incidence of PD
+
+```{r}
+results_pd_inc = data_tot %>% 
+  filter(!is.na(inc_Nyears_pd)) %>% 
+  mutate(prev = inc_n_pd/inc_Nyears_pd) %>% 
+  arrange(desc(prev))
+
+meta_pd_inc = meta::metarate(event = inc_n_pd, 
+                         time = inc_Nyears_pd, 
+                         studlab = study, 
+                         irscale=100000, 
+                         data = results_pd_inc, 
+                         #subgroup=study_type, 
+                         common=FALSE,
+                         random=TRUE)
+
+summary(meta_pd_inc)
+```
+
+```{r}
+png("pd_inc_plot.png", width = 30, height = 10, units = "cm", res=500)
+
+forest(meta_pd_inc)
+
+dev.off()
+```

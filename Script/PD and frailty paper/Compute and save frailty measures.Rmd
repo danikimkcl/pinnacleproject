@@ -1,0 +1,485 @@
+---
+title: "Compute frailty scores"
+output: html_document
+date: "2023-08-23"
+---
+
+## Open dataset
+
+Source codes
+```{r}
+source(here::here("Script", "Functions", "Data process", "func_open_and_process_data.R"))
+```
+
+### Open Baseline phase data
+
+```{r}
+# Create data path
+path = here::here("Data", "raw data", "baseline survey", "prevalence_survey_data_1_3.dta")
+
+# Open and process data
+data_baseline = open_and_process_data(path, "dta") # this function opens a Stata dataset (dta) and converts Stata's labelled variables into factors
+
+## Subset participants in Latin America
+#data = data %>% 
+#  filter(centreid %in% c("Cuba", "DR", "Peru (urban)", "Peru (rural)", "Venezuela", "Mexico (urban)", "Mexico (rural)", "Puerto Rico"))
+## drop unused factor levels
+#data$centreid = droplevels(data$centreid)
+
+# Select relevant variables for frailty 
+data_base = data_baseline %>% 
+  select(houseid2, PARTICID, countryid, centreid, gender, FR_weight_loss, FR_exhaust, FR_walkslow, FR_underactive, cogscore, peyeint,
+         pearint, FR_armdic, contains("frail"), NEO12B, PDAS7, PACTIVE, Q531, Q481, ARMCIRC, Q1705, q17912,
+         cvadiag, cdem1066, PARTH, PCOUGH, PRESP, hyperten, PGUT, PSKIN, PTOLDDM, COAD, heartisc,
+         PEYE, PEAR, WSTCIRC, HIPCIRC, euro6, Q871, wenger, walkdiff, SRQ18, SRQ20, Q451) %>% 
+  mutate(whr = WSTCIRC/HIPCIRC)
+
+# View data
+temp = data_base %>% 
+  select(-houseid2, -PARTICID, -countryid, -centreid) %>% 
+  mutate(across(c(everything(), -cogscore, -ARMCIRC, -whr), ~as.factor(.x)))
+summary(temp)
+```
+
+### Open Incidence phase data
+
+```{r}
+# Create data path for follow-up status at incidence phase
+path = here::here("Data", "raw data", "fu folder from Matthew", "incidence cohort (all survey outcomes)", "other countries", "status_outcome (survey cohort)_1_0.sav")
+status_outcome = open_and_process_data(path, "sav")
+
+# Create data path for incidence phase data
+path = here::here("Data", "raw data", "fu folder from Matthew", "incidence cohort (all survey outcomes)", "other countries", "full follow up_1_2.dta")
+data_full_fu12 = open_and_process_data(path, "dta")
+
+# Select relevant variables for frailty from incidence phase
+data_full_fu12 = data_full_fu12 %>% 
+  select(countryid, centreid, HOUSEID, PARTICID, f_cogscore, f_PEYE, f_PEAR, f_NEO12B, f_PDAS7, f_PACTIVE, f_Q531, f_Q481, f_ARMCIRC,
+         f_Q1705, f_q17912, f_cvadiag, f_cdem1066, f_PARTH, f_PCOUGH, f_PRESP, f_hyperten, f_PGUT, f_PSKIN, f_PTOLDDM,
+         f_heartisc, f_WSTCIRC, f_HIPCIRC, f_euro6, f_Q871, f_SRQ20, f_SRQ18, f_Q451) %>% # No COAD, wenger, and walkdiff variables NOT in follow-up
+  mutate(centreid_num = case_when(centreid == "Cuba" ~ 10,
+                                  centreid == "DR" ~ 20,
+                                  centreid == "Peru (urban)" ~ 30,
+                                  centreid == "Peru (rural)" ~ 40,
+                                  centreid == "Venezuela" ~ 50,
+                                  centreid == "Mexico (urban)" ~ 60,
+                                  centreid == "Mexico (rural)" ~ 70,
+                                  centreid == "China (urban)" ~ 100,
+                                  centreid == "China (rural)" ~ 110,
+                                  centreid == "Puerto Rico" ~ 200)) %>% 
+  mutate(HOUSEID = stringr::str_pad(HOUSEID, 4, pad="0")) %>% 
+  mutate(houseid2 = as.numeric(paste0(centreid_num, HOUSEID))) %>% 
+  select(-HOUSEID, -centreid_num)
+
+# Relabel country and id variables to match the other dataframe
+status_outcome = status_outcome %>% 
+  mutate(centreid_num = case_when(centreid == "Cuba" ~ 10,
+                                  centreid == "DR" ~ 20,
+                                  centreid == "Peru (urban)" ~ 30,
+                                  centreid == "Peru (rural)" ~ 40,
+                                  centreid == "Venezuela" ~ 50,
+                                  centreid == "Mexico (urban)" ~ 60,
+                                  centreid == "Mexico (rural)" ~ 70,
+                                  centreid == "China (urban)" ~ 100,
+                                  centreid == "China (rural)" ~ 110,
+                                  centreid == "Puerto Rico" ~ 200)) %>% 
+  mutate(HOUSEID = stringr::str_pad(HOUSEID, 4, pad="0")) %>% 
+  mutate(houseid2 = as.numeric(paste0(centreid_num, HOUSEID))) %>% 
+  select(-HOUSEID, -centreid_num, -centreid)
+
+# Merge in follow-up status & gender to incidence phase data
+data_inc = data_full_fu12 %>% 
+  left_join(status_outcome, by = c("houseid2", "PARTICID")) %>% 
+  left_join(select(data_baseline, houseid2, PARTICID, gender), by = c("houseid2", "PARTICID")) %>% 
+  mutate(f_whr = f_WSTCIRC/f_HIPCIRC)
+
+# View data
+temp = data_inc %>% 
+  select(-PARTICID, -houseid2, -f_WSTCIRC, -f_HIPCIRC) %>% 
+  mutate(across(c(everything(), -f_whr, -f_cogscore, -f_ARMCIRC), ~as.factor(.x)))
+summary(temp)
+
+#### Incidence phase data excludes participants who died, refused, were uncontactable or not recorded
+
+# Merge cohort to baseline data
+#data2 = data_full_fu12 %>% 
+# left_join(data2, by = c("houseid2", "PARTICID"))
+```
+
+## Compute frailty measures
+
+#### Baseline phase
+
+Frailty phenotype 
+
+ - Used Miao's calculation rather than the available original FP variable in 10/66
+ 
+```{r}
+# Compute frailty phenotype measure at baseline
+data_base = data_base %>% 
+  mutate(b_weight_loss = case_when(Q531==1 ~ 1, 
+                                   Q531==0 ~ 0, 
+                                   TRUE ~ NA_real_),
+         b_exhaust = case_when(Q481==1 | Q481==2 ~ 1, 
+                               Q481==0 ~ 0,
+                               TRUE ~ NA_real_),
+         walkdiff = case_when(PDAS7=="none" | PDAS7=="mild difficulty" | PDAS7=="moderate difficulty" ~ 0,
+                              PDAS7=="severe difficulty" | PDAS7=="extreme difficulty/ cannot do" ~ 1,
+                              TRUE ~ NA_real_),         
+         walkslow = case_when(NEO12B>=1 & NEO12B<16 ~ 0,
+                              NEO12B>=16 & NEO12B<992 ~ 1, 
+                              TRUE ~ NA_real_),
+         b_walkslow = case_when(walkdiff==0 & (is.na(NEO12B) | NEO12B==0) ~ 0,
+                                walkdiff==1 & (is.na(NEO12B) | NEO12B==0) ~ 1,
+                                walkdiff==0 & is.na(NEO12B) ~ 0,
+                                TRUE ~ walkslow),
+         b_underactive = if_else(PACTIVE=="not at all", 1, 0)) %>% 
+  mutate(b_fp.count = rowSums(.[c("b_weight_loss", "b_exhaust", "b_walkslow", "b_underactive")], na.rm=FALSE),
+         b_fp.frail = as.factor(if_else(b_fp.count>=2, 1, 0)))
+```
+
+Multidimensional frailty
+```{r}
+# Compute multidimensional frailty measure at baseline
+data_base = data_base %>% 
+  mutate(b_cognition = if_else(cogscore<29.5, 1, 0),
+         b_sensory = case_when(peyeint=="yes" | pearint=="yes" ~ 1,
+                             is.na(peyeint) & is.na(pearint) ~ NA_real_,
+                             TRUE ~ 0),
+         b_nutrition = if_else(ARMCIRC<22, 1, 0),
+         b_physical = b_walkslow) %>% 
+  mutate(b_mf.count = rowSums(.[c("b_cognition", "b_sensory", "b_nutrition", "b_physical")], na.rm=FALSE),
+         b_mf.frail = as.factor(if_else(b_mf.count>=2, 1, 0)))
+```
+
+Frailty index
+```{r}
+data_base = data_base %>% 
+  mutate(b_fi_active = case_when(PACTIVE=="very physically active" ~ 0,
+                               PACTIVE=="fairly" ~ 0.3,
+                               PACTIVE=="not very" ~ 0.6,
+                               PACTIVE=="not at all" ~ 1,
+                               TRUE ~ NA_real_),
+         b_fi_weight_loss = case_when(Q531==0 ~ 0,
+                                    Q531==1 ~ 1,
+                                    TRUE ~ NA_real_),
+         b_fi_exhaust = case_when(Q481==0 ~ 0,
+                                Q481==1 ~ 0.5,
+                                Q481==2 ~ 1,
+                                TRUE ~ NA_real_),
+         b_fi_stroke = case_when(cvadiag=="no" ~ 0,
+                               cvadiag=="yes" ~ 1,
+                               TRUE ~ NA_real_),
+         b_fi_dementia = case_when(cdem1066=="non-case" ~ 0,
+                                 cdem1066=="case" ~ 1,
+                                 TRUE ~ NA_real_),
+         b_fi_arth = case_when(PARTH=="no problem" ~ 0,
+                             PARTH=="has problem, interferes not at all" ~ 0,
+                             PARTH=="has problem, interferes a little" ~ 0.5,
+                             PARTH=="has problem, interferes a lot" ~ 1,
+                             TRUE ~ NA_real_),
+         b_fi_cough = case_when(PCOUGH=="no problem" ~ 0,
+                             PCOUGH=="has problem, interferes not at all" ~ 0,
+                             PCOUGH=="has problem, interferes a little" ~ 0.5,
+                             PCOUGH=="has problem, interferes a lot" ~ 1,
+                             TRUE ~ NA_real_),
+         b_fi_resp = case_when(PRESP=="no problem" ~ 0,
+                             PRESP=="has problem, interferes not at all" ~ 0,
+                             PRESP=="has problem, interferes a little" ~ 0.5,
+                             PRESP=="has problem, interferes a lot" ~ 1,
+                             TRUE ~ NA_real_),
+         b_fi_hyperten = case_when(hyperten=="no" ~ 0,
+                                 hyperten=="yes" ~ 1,
+                                 TRUE ~ NA_real_),
+         b_fi_heartisc = case_when(heartisc=="no" ~ 0,
+                                 heartisc=="yes" ~ 1,
+                                 TRUE ~ NA_real_),
+         b_fi_gut = case_when(PGUT=="no problem" ~ 0,
+                            PGUT=="has problem, interferes not at all" ~ 0,
+                            PGUT=="has problem, interferes a little" ~ 0.5,
+                            PGUT=="has problem, interferes a lot" ~ 1,
+                            TRUE ~ NA_real_),
+         b_fi_skin = case_when(PSKIN=="no problem" ~ 0,
+                            PSKIN=="has problem, interferes not at all" ~ 0,
+                            PSKIN=="has problem, interferes a little" ~ 0.5,
+                            PSKIN=="has problem, interferes a lot" ~ 1,
+                            TRUE ~ NA_real_),
+         b_fi_diabetes = case_when(PTOLDDM=="no" ~ 0,
+                                 PTOLDDM=="yes" ~ 1,
+                                 TRUE ~ NA_real_),
+         #b_fi_copd = case_when(COAD=="does not met criteria for COPD" ~ 0,
+        #                     COAD=="meets criteria for COPD" ~ 1,
+        #                     TRUE ~ NA_real_),
+         b_fi_eye = case_when(PEYE=="no problem" ~ 0,
+                            PEYE=="has problem, interferes not at all" ~ 0,
+                            PEYE=="has problem, interferes a little" ~ 0.5,
+                            PEYE=="has problem, interferes a lot" ~ 1,
+                            TRUE ~ NA_real_),
+         b_fi_ear = case_when(PEAR=="no problem" ~ 0,
+                            PEAR=="has problem, interferes not at all" ~ 0,
+                            PEAR=="has problem, interferes a little" ~ 0.5,
+                            PEAR=="has problem, interferes a lot" ~ 1,
+                            TRUE ~ NA_real_),
+         b_fi_paralysis = case_when(Q1705==1 | Q1705==2 | q17912==1 ~ 1,
+                                  Q1705==0 | q17912==0 ~ 0,
+                                  TRUE ~ NA_real_),
+         b_fi_cognition = if_else(cogscore<29.5, 1, 0),
+         b_fi_interest = case_when(euro6=="symptom absent" ~ 0,
+                              euro6=="symptom present" ~ 1,
+                              TRUE ~ NA_real_),
+         b_fi_lonely = case_when(Q871==0 ~ 0,
+                               Q871==1 ~ 0.5,
+                               Q871==2 ~ 1,
+                              TRUE ~ NA_real_),
+         #b_fi_socialsupp = case_when(wenger=="family dependent" ~ 0,
+        #                    wenger=="locally integrated" ~ 0,
+         #                   wenger=="locally self-contained" ~ 1,
+         #                   wenger=="wider community focussed" ~ 0,
+        #                    wenger=="private" ~ 1,
+        #                    TRUE ~ NA_real_),
+         b_fi_nutrition = if_else(ARMCIRC<22, 1, 0), 
+         b_fi_whr = case_when(whr>2 | is.na(whr) ~ NA_real_,
+                            whr>=0.9 & gender=="male" ~ 1,
+                            whr>=0.85 & gender=="female" ~ 1,
+                            TRUE ~ 0),
+         #b_fi_walkdiff = case_when(walkdiff=="no or moderate difficulty in walking 1km" ~ 0, 
+        #                         walkdiff=="severe difficulty or cannot walk" ~ 1, 
+        #                         TRUE ~ NA_real_),
+         b_fi_tired = case_when(SRQ18=="yes, symptom present" | SRQ20=="yes, symptom present" ~ 1,
+                              SRQ18=="no" | SRQ20=="no" ~ 0,
+                              TRUE ~ NA_real_),
+         b_fi_looksfrail = case_when(Q451==0 ~ 0,
+                                Q451==1 ~ 0.5,
+                                Q451==2 ~ 1,
+                                TRUE ~ NA_real_))
+
+length(data_base %>% select(starts_with("b_fi_")) %>% names)
+
+# Count total missing per participant
+temp = data_base %>% 
+  select(starts_with("b_fi_")) %>% 
+  mutate(n_NA = rowSums(is.na(.)))
+summary(as.factor(temp$n_NA))
+
+data_base = data_base %>% 
+  mutate(n_NA = rowSums(is.na(data_base %>% select(starts_with("b_fi_"))))) %>% 
+  mutate(b_fi.count = rowSums(across(starts_with("b_fi_")), na.rm=TRUE)) %>% 
+  mutate(b_fi.count = if_else(n_NA>3, NA_real_, b_fi.count)) %>% # only create scores for people with 3 or less missing deficits,
+  mutate(b_fi.score = b_fi.count/length(data_base %>% select(starts_with("b_fi_")) %>% names),
+         b_fi.frail = as.factor(if_else(b_fi.score>=0.25, 1, 0)),
+         b_fi.cat = factor(case_when(is.na(b_fi.score) ~ NA_character_,
+                                   b_fi.score>=0.25 ~ "Frail",
+                                   b_fi.score>=0.1 ~ "Pre-frail",
+                                   TRUE ~ "Non-frail"), levels = c("Non-frail", "Pre-frail", "Frail")),
+         b_fi.score0.1 = b_fi.score/0.1) # to estimate per 0.1 unit effect estimates
+
+```
+
+Summary of frailty variables at baseline 
+```{r}
+# Individual frailty variables
+summary(as.factor(data_base$b_weight_loss))
+summary(as.factor(data_base$b_exhaust))
+summary(as.factor(data_base$b_walkslow))
+summary(as.factor(data_base$b_underactive))
+summary(as.factor(data_base$b_cognition))
+summary(as.factor(data_base$b_sensory))
+summary(as.factor(data_base$b_nutrition))
+summary(as.factor(data_base$b_physical))
+
+# Overall frail count
+summary(data_base$b_fp.frail)
+summary(data_base$b_mf.frail)
+summary(data_base$b_fi.frail)
+```
+
+#### Incidence phase
+
+Frailty phenotype
+```{r}
+# Compute frailty phenotype measure at follow-up
+data_inc = data_inc %>% 
+  mutate(i_weight_loss = case_when(f_Q531==1 ~ 1, 
+                                   f_Q531==0 ~ 0, 
+                                   TRUE ~ NA_real_),
+         i_exhaust = case_when(f_Q481==1 | f_Q481==2 ~ 1, 
+                               f_Q481==0 ~ 0,
+                               TRUE ~ NA_real_),
+         walkdiff = case_when(f_PDAS7=="none" | f_PDAS7=="mild difficulty" | f_PDAS7=="moderate difficulty" ~ 0,
+                              f_PDAS7=="severe difficulty" | f_PDAS7=="extreme difficulty/ cannot do" ~ 1,
+                              TRUE ~ NA_real_),
+         i_walkslow = case_when(f_NEO12B>=1 & f_NEO12B<16 ~ 0,
+                                f_NEO12B>=16 & f_NEO12B<=900 ~ 1, 
+                                walkdiff==1 & (is.na(f_NEO12B) | f_NEO12B==0) ~ 1,
+                                walkdiff==0 & (is.na(f_NEO12B) | f_NEO12B==0) ~ 0,
+                                walkdiff==0 & is.na(f_NEO12B) ~ 0,
+                                TRUE ~ NA_real_),
+         i_underactive = case_when(f_PACTIVE=="not at all" ~ 1, 
+                                   is.na(f_PACTIVE) ~ NA_real_,
+                                   TRUE ~ 0)) %>% 
+  mutate(i_fp.count = rowSums(.[c("i_weight_loss", "i_exhaust", "i_walkslow", "i_underactive")], na.rm=FALSE),
+         i_fp.frail = as.factor(if_else(i_fp.count>=2, 1, 0)))
+```
+
+Multidimensional frailty
+```{r}
+# Compute multidimensional frailty measure at follow-up
+data_inc = data_inc %>% 
+  mutate(i_cognition = if_else(f_cogscore<29.5, 1, 0),
+         i_sensory = case_when(f_PEYE=="yes" | f_PEAR=="yes" ~ 1,
+                             is.na(f_PEYE) & is.na(f_PEAR) ~ NA_real_,
+                             TRUE ~ 0),
+         i_nutrition = if_else(f_ARMCIRC<22, 1, 0),
+         i_physical = i_walkslow) %>% 
+  mutate(i_mf.count = rowSums(.[c("i_cognition", "i_sensory", "i_nutrition", "i_physical")], na.rm=TRUE),
+         i_mf.frail = as.factor(if_else(i_mf.count>=2, 1, 0)))
+```
+
+Frailty index
+```{r}
+data_inc = data_inc %>% 
+  mutate(i_fi_active = case_when(f_PACTIVE=="very physically active" ~ 0,
+                               f_PACTIVE=="fairly" ~ 0.3,
+                               f_PACTIVE=="not very" ~ 0.6,
+                               f_PACTIVE=="not at all" ~ 1,
+                               TRUE ~ NA_real_),
+         i_fi_weight_loss = case_when(f_Q531==0 ~ 0,
+                                    f_Q531==1 ~ 1,
+                                    TRUE ~ NA_real_),
+         i_fi_exhaust = case_when(f_Q481==0 ~ 0,
+                                f_Q481==1 ~ 0.5,
+                                f_Q481==2 ~ 1,
+                                TRUE ~ NA_real_),
+         i_fi_stroke = case_when(f_cvadiag==0 ~ 0,
+                               f_cvadiag==1 ~ 1,
+                               TRUE ~ NA_real_),
+         i_fi_dementia = case_when(f_cdem1066=="non-case" ~ 0,
+                                 f_cdem1066=="case" ~ 1,
+                                 TRUE ~ NA_real_),
+         i_fi_arth = case_when(f_PARTH=="no problem" ~ 0,
+                             f_PARTH=="has problem, interferes not at all" ~ 0,
+                             f_PARTH=="has problem, interferes a little" ~ 0.5,
+                             f_PARTH=="has problem, interferes a lot" ~ 1,
+                             TRUE ~ NA_real_),
+         i_fi_cough = case_when(f_PCOUGH=="no problem" ~ 0,
+                             f_PCOUGH=="has problem, interferes not at all" ~ 0,
+                             f_PCOUGH=="has problem, interferes a little" ~ 0.5,
+                             f_PCOUGH=="has problem, interferes a lot" ~ 1,
+                             TRUE ~ NA_real_),
+         i_fi_resp = case_when(f_PRESP=="no problem" ~ 0,
+                             f_PRESP=="has problem, interferes not at all" ~ 0,
+                             f_PRESP=="has problem, interferes a little" ~ 0.5,
+                             f_PRESP=="has problem, interferes a lot" ~ 1,
+                             TRUE ~ NA_real_),
+         i_fi_hyperten = case_when(f_hyperten=="no" ~ 0,
+                                 f_hyperten=="yes" ~ 1,
+                                 TRUE ~ NA_real_),
+         i_fi_heartisc = case_when(f_heartisc==0 ~ 0,
+                                 f_heartisc==1 ~ 1,
+                                 TRUE ~ NA_real_),
+         i_fi_gut = case_when(f_PGUT=="no problem" ~ 0,
+                            f_PGUT=="has problem, interferes not at all" ~ 0,
+                            f_PGUT=="has problem, interferes a little" ~ 0.5,
+                            f_PGUT=="has problem, interferes a lot" ~ 1,
+                            TRUE ~ NA_real_),
+         i_fi_skin = case_when(f_PSKIN=="no problem" ~ 0,
+                            f_PSKIN=="has problem, interferes not at all" ~ 0,
+                            f_PSKIN=="has problem, interferes a little" ~ 0.5,
+                            f_PSKIN=="has problem, interferes a lot" ~ 1,
+                            TRUE ~ NA_real_),
+         i_fi_diabetes = case_when(f_PTOLDDM=="no" ~ 0,
+                                 f_PTOLDDM=="yes" ~ 1,
+                                 TRUE ~ NA_real_),
+         #i_fi_copd = case_when(f_COAD=="does not met criteria for COPD" ~ 0,
+        #                     f_COAD=="meets criteria for COPD" ~ 1,
+        #                     TRUE ~ NA_real_),
+         i_fi_eye = case_when(f_PEYE=="no problem" ~ 0,
+                            f_PEYE=="has problem, interferes not at all" ~ 0,
+                            f_PEYE=="has problem, interferes a little" ~ 0.5,
+                            f_PEYE=="has problem, interferes a lot" ~ 1,
+                            TRUE ~ NA_real_),
+         i_fi_ear = case_when(f_PEAR=="no problem" ~ 0,
+                            f_PEAR=="has problem, interferes not at all" ~ 0,
+                            f_PEAR=="has problem, interferes a little" ~ 0.5,
+                            f_PEAR=="has problem, interferes a lot" ~ 1,
+                            TRUE ~ NA_real_),
+         i_fi_paralysis = case_when(f_Q1705==1 | f_Q1705==2 | f_q17912==1 ~ 1,
+                                  f_Q1705==0 | f_q17912==0 ~ 0,
+                                  TRUE ~ NA_real_),
+         i_fi_cognition = if_else(f_cogscore<29.5, 1, 0),
+         i_fi_interest = case_when(f_euro6=="symptom absent" ~ 0,
+                              f_euro6=="symptom present" ~ 1,
+                              TRUE ~ NA_real_),
+         i_fi_lonely = case_when(f_Q871==0 ~ 0,
+                               f_Q871==1 ~ 0.5,
+                               f_Q871==2 ~ 1,
+                              TRUE ~ NA_real_),
+         #i_fi_socialsupp = case_when(f_wenger=="family dependent" ~ 0,
+        #                    f_wenger=="locally integrated" ~ 0,
+         #                   f_wenger=="locally self-contained" ~ 1,
+         #                   f_wenger=="wider community focussed" ~ 0,
+        #                    f_wenger=="private" ~ 1,
+        #                    TRUE ~ NA_real_),
+         i_fi_nutrition = if_else(f_ARMCIRC<22, 1, 0), 
+         i_fi_whr = case_when(f_whr>2 | is.na(f_whr) ~ NA_real_,
+                            f_whr>=0.9 & gender=="male" ~ 1,
+                            f_whr>=0.85 & gender=="female" ~ 1,
+                            TRUE ~ 0),
+         #i_fi_walkdiff = case_when(f_walkdiff=="no or moderate difficulty in walking 1km" ~ 0, 
+        #                         f_walkdiff=="severe difficulty or cannot walk" ~ 1, 
+        #                         TRUE ~ NA_real_),
+         i_fi_tired = case_when(f_SRQ18=="yes, symptom present" | f_SRQ20=="yes, symptom present" ~ 1,
+                              f_SRQ18=="no" | f_SRQ20=="no" ~ 0,
+                              TRUE ~ NA_real_),
+         i_fi_looksfrail = case_when(f_Q451==0 ~ 0,
+                                f_Q451==1 ~ 0.5,
+                                f_Q451==2 ~ 1,
+                                TRUE ~ NA_real_))
+
+length(data_inc %>% select(starts_with("i_fi_")) %>% names)
+
+# View data
+temp = data_inc %>% 
+  select(starts_with("i_fi_")) %>% 
+  mutate(across(everything(), ~as.factor(.x)))
+summary(temp)
+
+# Count total missing per participant
+temp = data_inc %>% 
+  select(starts_with("i_fi_")) %>% 
+  mutate(n_NA = rowSums(is.na(.)))
+summary(as.factor(temp$n_NA))
+
+data_inc = data_inc %>% 
+  mutate(n_NA = rowSums(is.na(data_inc %>% select(starts_with("i_fi_"))))) %>% 
+  mutate(i_fi.count = rowSums(across(starts_with("i_fi_")), na.rm=TRUE)) %>% 
+  mutate(i_fi.count = if_else(n_NA>3, NA_real_, i_fi.count)) %>% # only create scores for people with 3 or less missing deficits
+  mutate(i_fi.score = i_fi.count/length(data_inc %>% select(starts_with("i_fi_")) %>% names),
+         i_fi.frail = as.factor(if_else(i_fi.score>=0.25, 1, 0)),
+         i_fi.cat = factor(case_when(is.na(i_fi.score) ~ NA_character_,
+                                   i_fi.score>=0.25 ~ "Frail",
+                                   i_fi.score>=0.1 ~ "Pre-frail",
+                                   TRUE ~ "Non-frail"), levels = c("Non-frail", "Pre-frail", "Frail")),
+         i_fi.score0.1 = i_fi.score/0.1) # to estimate per 0.1 unit effect estimates
+```
+
+
+```{r}
+# Overall frail count
+summary(data_inc$i_fp.frail)
+summary(data_inc$i_mf.frail)
+summary(data_inc$i_fi.frail)
+```
+
+## Merge and save data
+
+```{r}
+# Merge frailty variables from baseline and incidence phase into one dataframe
+## merge on houseid2 (composite of centreid and houseid) AND PARTICID
+
+data_base_frailty = data_base %>% select(houseid2, PARTICID, countryid, centreid, starts_with("b_"))
+data_inc_frailty = data_inc %>% select(houseid2, PARTICID, countryid, centreid, Statusfu, starts_with("i_"))
+
+saveRDS(data_base_frailty, file=here::here("Data", "processed data", "data_baseline_frailty.rds"))
+saveRDS(data_inc_frailty, file=here::here("Data", "processed data", "data_incidence_frailty.rds"))
+```

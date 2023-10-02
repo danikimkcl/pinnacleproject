@@ -71,7 +71,7 @@ data$countryid = droplevels(data$countryid)
 Subset relevant variables
 ```{r}
 varnames = data %>% 
-  select(houseid2, PARTICID, countryid, centreid, age, gender, rural, Nassets, PMARRY, CARENEED, illnocat, cdem1066, PEDUC, PTOLDDM, PSMOKE, PALCNOW, PALCPAST, PACTIVE, PMEATFRQ, PFISHFRQ, PVEGS, NEO14G, NEO6AU, NEO6AL, NEO6BU, NEO6BL, NEO4E, NEO4F, NOE1, NEO14E, PCVA, medserv, PHOSAD, pnism, JorgePD, parkinsonism) %>% 
+  select(houseid2, PARTICID, countryid, centreid, age, gender, rural, Nassets, PMARRY, CARENEED, illnocat, cdem1066, PEDUC, PTOLDDM, PSMOKE, PALCNOW, PALCPAST, PACTIVE, PMEATFRQ, PFISHFRQ, PVEGS, NEO14G, NEO6AU, NEO6AL, NEO6BU, NEO6BL, NEO4E, NEO4F, NOE1, NEO14E, PCVA, medserv, PHOSAD, pnism, JorgePD, parkinsonism, PARK) %>% 
   names()
 
 data = data %>% select_if(names(.) %in% varnames)
@@ -116,6 +116,7 @@ mortality_outcome = mortality_outcome %>%
 data = data %>% 
   left_join(select(mortality_outcome, houseid2, PARTICID, dead2, censor_days, censor_yr, vital_ascertained), by = c("houseid2", "PARTICID"))
 ```
+
 Recode `parkinsonism` variable
 
 ```{r}
@@ -124,6 +125,17 @@ data = data %>%
 
 summary(as.factor(data$parkinsonism))
 ```
+Create a PD variable that combines the algorithm-based dx (`JorgePD`) and self-reported dx (`PARK`)
+
+```{r}
+# Create a PD variable that combines the algorithm-based dx (`JorgePD`) and self-reported dx (`PARK`)
+data = data %>% 
+  mutate(JorgePD_or_selfPD = case_when(JorgePD==1 | PARK=="probable" | PARK=="certain" ~ 1, 
+                                       JorgePD==0 | PARK=="no" ~ 0, 
+                                       TRUE ~ NA_real_))
+
+summary(as.factor(data$JorgePD_or_selfPD))
+```
 
 Create dummy mortality variable
 
@@ -131,6 +143,32 @@ Create dummy mortality variable
 summary(data$vital_ascertained)
 summary(data$dead2)
 ```
+
+Characteristics of participants with and without vital status ascertained
+
+```{r}
+temp = data %>% 
+  mutate(vital_yesno = if_else(vital_ascertained == "no" | is.na(vital_ascertained), 0, 1))
+  
+vars = c("age", "gender", "PMARRY", "PEDUC", "Nassets",  "illnocat", "pnism", "JorgePD_or_selfPD", "medserv", "PHOSAD", "CARENEED")
+factorVars = c("gender", "PMARRY", "PEDUC", "Nassets",  "illnocat", "pnism", "JorgePD_or_selfPD", "medserv", "PHOSAD", "CARENEED")
+
+tab1 = tableone::CreateTableOne(data = temp,
+                                vars = vars,
+                                factorVars = factorVars,
+                                strata = c("vital_yesno"),
+                                addOverall = TRUE)
+
+table1 = print(tab1)
+```
+
+Save tables
+
+```{r}
+path = here::here("Output", "PD outcomes paper", "Table1-vitalstatus.csv")
+write.csv(table1, path)
+```
+
 1049 participants included in the `baseline_survey_for_mortality_1_0.sav` dataset  10315 had vital status acertained; had missing follow-up status; 1501 did not - exclude these last two group of people from the subsequent analysis.
 
 ```{r}
@@ -159,10 +197,10 @@ descr::crosstab(data$died, data$pnism, prop.c=TRUE, chisq=TRUE)
 descr::crosstab(data$died, data$JorgePD, prop.c=TRUE,  chisq=TRUE)
 ```
 
-### Self-reported PD and mortality
+### JorgePD_or_selfPD and mortality
 
 ```{r}
-descr::crosstab(data$died, data$parkinsonism, prop.c=TRUE,  chisq=TRUE)
+descr::crosstab(data$died, data$JorgePD_or_selfPD, prop.c=TRUE,  chisq=TRUE)
 ```
 
 ## Check PH assumption
@@ -191,9 +229,29 @@ test.ph
 res.cox = survival::coxph(Surv(censor_days, died) ~ parkinsonism + age + gender + illnocat + PEDUC, data = data)
 test.ph = survival::cox.zph(res.cox)
 test.ph
+
+res.cox = survival::coxph(Surv(censor_days, died) ~ JorgePD_or_selfPD, data = data)
+test.ph = survival::cox.zph(res.cox)
+test.ph
+
+res.cox = survival::coxph(Surv(censor_days, died) ~ JorgePD_or_selfPD + age + gender + illnocat + PEDUC, data = data)
+test.ph = survival::cox.zph(res.cox)
+test.ph
 ```
 
 From the output above, the test is statistically significant for the `illnocat` variable, and the global test is also statistically significant. Therefore, we can assume the proportional hazards is violated. One solution would be to conduct a stratified Cox PH - the covariate with nonproportional effects is included in the Cox model as stratification variable rather than a predictor.
+
+Check if stratification fixes this
+
+```{r}
+res.cox = survival::coxph(Surv(censor_days, died) ~ JorgePD + age + gender + strata(illnocat) + PEDUC, data = data)
+test.ph = survival::cox.zph(res.cox)
+test.ph
+
+res.cox = survival::coxph(Surv(censor_days, died) ~ JorgePD_or_selfPD + age + gender + strata(illnocat) + PEDUC, data = data)
+test.ph = survival::cox.zph(res.cox)
+test.ph
+```
 
 ## Cox Proportionak Hazards Regression model
 
@@ -248,26 +306,26 @@ hrs_pnism_died_crude = func_coxph(data=data, exposure="pnism", adj="")
 hrs_pnism_died_adj = func_coxph(data=data, exposure="pnism", adj=" + age + gender + PEDUC + strata(illnocat)")
 hrs_pd_died_crude = func_coxph(data=data, exposure="JorgePD", adj="")
 hrs_pd_died_adj = func_coxph(data=data, exposure="JorgePD", adj=" + age + gender + PEDUC + strata(illnocat)")
-hrs_selfpd_died_crude = func_coxph(data=data, exposure="parkinsonism", adj="")
-hrs_selfpd_died_adj = func_coxph(data=data, exposure="parkinsonism", adj=" + age + gender + PEDUC + strata(illnocat)")
+hrs_pd2_died_crude = func_coxph(data=data, exposure="JorgePD_or_selfPD", adj="")
+hrs_pd2_died_adj = func_coxph(data=data, exposure="JorgePD_or_selfPD", adj=" + age + gender + PEDUC + strata(illnocat)")
 ```
 
-### Parkinsonism and all-cause mortality (Adjusted for age and sex, and stratified by no. illnesses)
+### Parkinsonism and all-cause mortality (Adjusted for age, sex, education, and no. illnesses)
 
 ```{r}
 kable(hrs_pnism_died_adj[-1, 1:4])
 ```
 
-### PD and all-cause mortality (Adjusted for age and sex, and stratified by no. illnesses)
+### PD and all-cause mortality (Adjusted for age, sex, education, and no. illnesses)
 
 ```{r}
 kable(hrs_pd_died_adj[-1, 1:4])
 ```
 
-### Self-reported PD and mortality (Adjusted for age and sex, and stratified by no. illnesses)
+### JorgePD_or_selfPD and mortality (Adjusted for age, sex, education, and no. illnesses)
 
 ```{r}
-kable(hrs_selfpd_died_adj[-1, 1:4])
+kable(hrs_pd2_died_adj[-1, 1:4])
 ```
 
 ## Cox PH regression: meta-analysis
@@ -300,7 +358,7 @@ meta::forest(mgen,
 plot_pnism_died_crude = grid.grab() 
 ```
 
-#### Adjusted for age and sex, PEDUC, and stratified by no. illnesses
+#### Adjusted for age, sex, education, and no. illnessess
 
 ```{r, fig.width = 10, fig.height = 6}
 mgen = meta::metagen(TE = estimate,
@@ -348,7 +406,7 @@ meta::forest(mgen,
 plot_pd_died_crude = grid.grab()
 ```
 
-#### Adjusted for age and sex, PEDUC, and stratified by no. illnesses
+#### Adjusted for age, sex, education, and no. illnesses
 
 ```{r, fig.width = 10, fig.height = 6}
 mgen = meta::metagen(TE = estimate,
@@ -370,7 +428,7 @@ meta::forest(mgen,
 plot_pd_died_adj = grid.grab()
 ```
 
-### Self-reported PD and all-cause mortality 
+### JorgePD_or_selfPD and all-cause mortality 
 
 #### Crude
 
@@ -384,17 +442,17 @@ mgen = meta::metagen(TE = estimate,
                      method.tau = "DL",                       # DerSimonian-Laird estimator
                      hakn = TRUE,                             # Hartung-Knapp adjustment of SEs
                      prediction = FALSE,                       # the above line and this line allow more uncertainty in the estimation of between-study heterogeneity and appropriate for use in random-effects meta-analysis
-                     data = hrs_selfpd_died_crude[-1, ],
-                     title = "Association between Self-reported PD and all-cause mortality")
+                     data = hrs_pd2_died_crude[-1, ],
+                     title = "Association between PD and all-cause mortality")
 
 meta::forest(mgen, 
              rightlabs = c("HR", "95% CI", "Weight"),
              print.tau2 = FALSE,
              leftcols = c("studlab"))
-plot_selfpd_died_crude = grid.grab()
+plot_pd2_died_crude = grid.grab()
 ```
 
-#### Adjusted for age and sex, PEDUC and stratified by no. illnesses
+#### Adjusted for age, sex, education and no. illnesses
 
 ```{r, fig.width = 10, fig.height = 6}
 mgen = meta::metagen(TE = estimate,
@@ -406,20 +464,20 @@ mgen = meta::metagen(TE = estimate,
                      method.tau = "DL",                       # DerSimonian-Laird estimator
                      hakn = TRUE,                             # Hartung-Knapp adjustment of SEs
                      prediction = FALSE,                       # the above line and this line allow more uncertainty in the estimation of between-study heterogeneity and appropriate for use in random-effects meta-analysis
-                     data = hrs_selfpd_died_adj[-1, ],
-                     title = "Association between self-reported PD and all-cause mortality")
+                     data = hrs_pd2_died_adj[-1, ],
+                     title = "Association between PD and all-cause mortality")
 
 meta::forest(mgen, 
              rightlabs = c("HR", "95% CI", "Weight"),
              print.tau2 = FALSE,
              leftcols = c("studlab"))
-plot_selfpd_died_adj = grid.grab()
+plot_pd2_died_adj = grid.grab()
 ```
 
 ## Combine and save outputs
 
 ```{r}
-plot_combined_crude = cowplot::plot_grid(plot_pnism_died_crude,  plot_pd_died_crude,
+plot_combined_crude = cowplot::plot_grid(plot_pnism_died_crude, plot_pd2_died_crude,
                                          align = "v",
                                          labels = "AUTO", 
                                          scale = 0.5,
@@ -427,9 +485,9 @@ plot_combined_crude = cowplot::plot_grid(plot_pnism_died_crude,  plot_pd_died_cr
 
 plot_combined_crude
 
-ggsave(plot = plot_combined_crude, filename = here::here("Output", "PD outcomes paper", "plots", "hrs_mortality_crude.png"), width = 18, height = 15, units = "cm") # height = 32 for 3 rows; height = 20 for 2 rows
+ggsave(plot = plot_combined_crude, filename = here::here("Output", "PD outcomes paper", "plots", "hrs_mortality_crude.png"), width = 18, height = 15, units = "cm") # height = 20 for 3 rows; height = 15 for 2 rows
 
-plot_combined_adj = cowplot::plot_grid(plot_pnism_died_adj, plot_pd_died_adj, 
+plot_combined_adj = cowplot::plot_grid(plot_pnism_died_adj, plot_pd2_died_adj,
                                          align = "v",
                                          labels = "AUTO", 
                                          scale = 0.5,
@@ -438,4 +496,50 @@ plot_combined_adj = cowplot::plot_grid(plot_pnism_died_adj, plot_pd_died_adj,
 plot_combined_adj
 
 ggsave(plot = plot_combined_adj, filename = here::here("Output", "PD outcomes paper", "plots", "hrs_mortality_adj.png"), width = 18, height = 15, units = "cm")
+```
+
+### Sensitivity analysis: Association between JorgePD and mortality
+
+Save plot as rds
+
+```{r}
+saveRDS(plot_pd_died_adj, file = here::here("Output", "PD outcomes paper", "plots", "temp_plot_JorgePD_died.rds"))
+```
+
+
+# Multiple imputation
+
+Libraries
+
+```{r}
+library(mice)
+```
+## Subset data
+
+```{r}
+data2 = data %>% 
+  select(age, countryid, rural, gender, PMARRY, PEDUC, CARENEED, PSMOKE, PACTIVE, Nassets, illnocat, parkinsonism, JorgePD_or_selfPD, died, censor_days) %>% 
+  sample_n(500)
+```
+
+## Impute data 
+
+```{r}
+imp = mice::mice(data2, m=5, maxit=10, printFlag=FALSE, seed=100)
+
+imp$method
+summary(imp)
+```
+
+## Analyse
+
+```{r}
+fit = with(data=imp, exp=coxph(Surv(censor_days, died) ~ JorgePD_or_selfPD + age + gender + strata(illnocat) + PEDUC))
+
+pooled = pool(fit)
+
+pooled_stat = summary(pooled, conf.int = TRUE) %>% 
+  select(-statistic, -df)
+
+cbind(term=pooled_stat[, "term"], exp(pooled_stat[, c("estimate", "2.5 %", "97.5 %")]), pval=pooled_stat[, "p.value"])
 ```

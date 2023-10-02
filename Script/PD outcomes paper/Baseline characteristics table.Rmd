@@ -67,10 +67,22 @@ data$centreid = droplevels(data$centreid)
 Subset relevant variables
 ```{r}
 varnames = data %>% 
-  select(houseid2, PARTICID, countryid, centreid, age, gender, rural, Nassets, PMARRY, CARENEED, illnocat, cdem1066, PEDUC, PTOLDDM, PSMOKE, PALCNOW, PALCPAST, PACTIVE, PMEATFRQ, PFISHFRQ, PVEGS, NEO14G, NEO6AU, NEO6AL, NEO6BU, NEO6BL, NEO4E, NEO4F, NOE1, NEO14E, PCVA, medserv, PPC, PHOSP, POTH, PPD, PDENT, PTH, PHOSAD, pnism, JorgePD) %>% 
+  select(houseid2, PARTICID, countryid, centreid, age, gender, rural, Nassets, PMARRY, CARENEED, illnocat, cdem1066, PEDUC, PTOLDDM, PSMOKE, PALCNOW, PALCPAST, PACTIVE, PMEATFRQ, PFISHFRQ, PVEGS, NEO14G, NEO6AU, NEO6AL, NEO6BU, NEO6BL, NEO4E, NEO4F, NOE1, NEO14E, PCVA, medserv, PPC, PHOSP, POTH, PPD, PDENT, PTH, PHOSAD, pnism, JorgePD, PARK) %>% 
   names()
 
 data = data %>% select_if(names(.) %in% varnames)
+```
+
+Create a PD variable that combines the algorithm-based dx (`JorgePD`) and self-reported dx (`PARK`)
+
+```{r}
+# Create a PD variable that combines the algorithm-based dx (`JorgePD`) and self-reported dx (`PARK`)
+data = data %>% 
+  mutate(JorgePD_or_selfPD = case_when(JorgePD==1 | PARK=="probable" | PARK=="certain" ~ 1, 
+                                       JorgePD==0 | PARK=="no" ~ 0, 
+                                       TRUE ~ NA_real_))
+
+summary(as.factor(data$JorgePD_or_selfPD))
 ```
 
 Merge vital status
@@ -118,13 +130,13 @@ data = data %>%
 ### Baseline characteristics of the 10/66 participants from Latin American countries
 
 ```{r, include=FALSE}
-vars = c("age", "gender", "PMARRY", "PEDUC", "Nassets",  "illnocat", "pnism", "JorgePD", "medserv", "PPC", "PHOSP", "POTH", "PPD", "PDENT", "PTH", "PHOSAD", "CARENEED",  "vital_ascertained")
-factorVars = c("gender", "PMARRY", "PEDUC", "Nassets",  "illnocat", "pnism", "JorgePD", "medserv", "PPC", "PHOSP", "POTH", "PPD", "PDENT", "PTH", "PHOSAD", "CARENEED",  "vital_ascertained")
+vars = c("age", "gender", "PMARRY", "PEDUC", "Nassets",  "illnocat", "pnism", "JorgePD_or_selfPD", "medserv", "PPC", "PHOSP", "POTH", "PPD", "PDENT", "PTH", "PHOSAD", "CARENEED",  "vital_ascertained")
+factorVars = c("gender", "PMARRY", "PEDUC", "Nassets",  "illnocat", "pnism", "JorgePD_or_selfPD", "medserv", "PPC", "PHOSP", "POTH", "PPD", "PDENT", "PTH", "PHOSAD", "CARENEED",  "vital_ascertained")
 
 tab1 = tableone::CreateTableOne(data = data,
                                 vars = vars,
                                 factorVars = factorVars,
-                                strata = c("centreid"),
+                                strata = c("countryid"),
                                 addOverall = TRUE)
 
 table1 = print(tab1)
@@ -149,7 +161,7 @@ factorVars = c("dead2")
 tab2 = tableone::CreateTableOne(data = data1,
                                 vars = vars,
                                 factorVars = factorVars,
-                                strata = c("centreid"),
+                                strata = c("countryid"),
                                 addOverall = TRUE)
 
 table2 = print(tab2)
@@ -164,13 +176,13 @@ print(tab2) %>%
 ### Baseline characteristics of mortality cohort
 
 ```{r, include=FALSE}
-vars = c("age", "gender", "PMARRY", "PEDUC", "Nassets",  "illnocat", "pnism", "JorgePD", "medserv", "PPC", "PHOSP", "POTH", "PPD", "PDENT", "PTH", "PHOSAD", "CARENEED")
-factorVars = c("gender", "PMARRY", "PEDUC", "Nassets",  "illnocat", "pnism", "JorgePD", "medserv", "PPC", "PHOSP", "POTH", "PPD", "PDENT", "PTH", "PHOSAD", "CARENEED")
+vars = c("age", "gender", "PMARRY", "PEDUC", "Nassets",  "illnocat", "pnism", "JorgePD_or_selfPD", "medserv", "PPC", "PHOSP", "POTH", "PPD", "PDENT", "PTH", "PHOSAD", "CARENEED")
+factorVars = c("gender", "PMARRY", "PEDUC", "Nassets",  "illnocat", "pnism", "JorgePD_or_selfPD", "medserv", "PPC", "PHOSP", "POTH", "PPD", "PDENT", "PTH", "PHOSAD", "CARENEED")
 
 tab3 = tableone::CreateTableOne(data = data1,
                                 vars = vars,
                                 factorVars = factorVars,
-                                strata = c("centreid"),
+                                strata = c("countryid"),
                                 addOverall = TRUE)
 
 table3 = print(tab3)
@@ -235,13 +247,13 @@ data2 = data_full_fu12 %>%
 ```
 
 ```{r, include=FALSE}
-vars = c("age", "gender", "PMARRY", "PEDUC", "Nassets",  "illnocat", "pnism", "JorgePD", "medserv", "PPC", "PHOSP", "POTH", "PPD", "PDENT", "PTH", "PHOSAD", "dependency")
-factorVars = c("gender", "PMARRY", "PEDUC", "Nassets",  "illnocat", "pnism", "JorgePD", "medserv", "PPC", "PHOSP", "POTH", "PPD", "PDENT", "PTH", "PHOSAD", "dependency")
+vars = c("age", "gender", "PMARRY", "PEDUC", "Nassets",  "illnocat", "pnism", "JorgePD_or_selfPD", "medserv", "PPC", "PHOSP", "POTH", "PPD", "PDENT", "PTH", "PHOSAD", "dependency")
+factorVars = c("gender", "PMARRY", "PEDUC", "Nassets",  "illnocat", "pnism", "JorgePD_or_selfPD", "medserv", "PPC", "PHOSP", "POTH", "PPD", "PDENT", "PTH", "PHOSAD", "dependency")
 
 tab4 = tableone::CreateTableOne(data = data2,
                                 vars = vars,
                                 factorVars = factorVars,
-                                strata = c("centreid"),
+                                strata = c("countryid"),
                                 addOverall = TRUE)
 
 table4 = print(tab4)
@@ -265,7 +277,7 @@ table5_hsu_pnism = print(tab5_hsu_pnism)
 tab5_hsu_pd = tableone::CreateTableOne(data = data,
                                 vars = vars,
                                 factorVars = factorVars,
-                                strata = c("JorgePD"))
+                                strata = c("JorgePD_or_selfPD"))
 
 table5_hsu_pd = print(tab5_hsu_pd)
 ```
@@ -286,7 +298,7 @@ table5_care_pnism = print(tab5_care_pnism)
 tab5_care_pd = tableone::CreateTableOne(data = data2,
                                 vars = vars,
                                 factorVars = factorVars,
-                                strata = c("JorgePD"))
+                                strata = c("JorgePD_or_selfPD"))
 
 table5_care_pd = print(tab5_care_pd)
 ```
@@ -307,9 +319,51 @@ table5_dead_pnism = print(tab5_dead_pnism)
 tab5_dead_pd = tableone::CreateTableOne(data = data1,
                                 vars = vars,
                                 factorVars = factorVars,
-                                strata = c("JorgePD"))
+                                strata = c("JorgePD_or_selfPD"))
 
 table5_dead_pd = print(tab5_dead_pd)
+```
+
+### Get minimum follow-up by country for mortality and dependency cohort
+
+```{r}
+data %>% 
+  group_by(countryid) %>% 
+  summarise(min = min(censor_yr, na.rm=TRUE),
+            max = max(censor_yr, na.rm=TRUE),
+            mean = mean(censor_yr, na.rm=TRUE),
+            sd = sd(censor_yr, na.rm=TRUE)) %>% 
+  mutate(across(min:sd, round, 2)) %>% 
+  mutate(fu = paste0("Mean (SD) ", mean, " (", sd, ") ", " [Range: ", min, "-", max, "]")) %>% 
+  select(countryid, fu)
+
+data %>% 
+  summarise(min = min(censor_yr, na.rm=TRUE),
+            max = max(censor_yr, na.rm=TRUE),
+            mean = mean(censor_yr, na.rm=TRUE),
+            sd = sd(censor_yr, na.rm=TRUE)) %>% 
+  mutate(across(min:sd, round, 2)) %>% 
+  mutate(fu = paste0("Mean (SD) ", mean, " (", sd, ") ", " [Range: ", min, "-", max, "]")) %>% 
+  select(fu)
+
+data2 %>% 
+  group_by(countryid) %>% 
+  summarise(min = min(censor_yr, na.rm=TRUE),
+            max = max(censor_yr, na.rm=TRUE),
+            mean = mean(censor_yr, na.rm=TRUE),
+            sd = sd(censor_yr, na.rm=TRUE)) %>% 
+  mutate(across(min:sd, round, 2)) %>% 
+  mutate(fu = paste0("Mean (SD) ", mean, " (", sd, ") ", " [Range: ", min, "-", max, "]")) %>% 
+  select(countryid, fu)
+
+data2 %>% 
+  summarise(min = min(censor_yr, na.rm=TRUE),
+            max = max(censor_yr, na.rm=TRUE),
+            mean = mean(censor_yr, na.rm=TRUE),
+            sd = sd(censor_yr, na.rm=TRUE)) %>% 
+  mutate(across(min:sd, round, 2)) %>% 
+  mutate(fu = paste0("Mean (SD) ", mean, " (", sd, ") ", " [Range: ", min, "-", max, "]")) %>% 
+  select(fu)
 ```
 
 Save tables

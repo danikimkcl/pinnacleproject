@@ -36,7 +36,7 @@ here::here()
 
 Source codes
 ```{r}
-source(here::here("Script", "Functions", "Data process", "func_open_and_process_dta.R"))
+source(here::here("Script", "Functions", "Data process", "func_open_and_process_data.R"))
 source(here::here("Script", "Functions", "Data process", "func_compute_pd_variables.R"))
 ```
 

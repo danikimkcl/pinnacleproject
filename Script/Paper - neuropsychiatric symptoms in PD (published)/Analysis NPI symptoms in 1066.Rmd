@@ -1,0 +1,694 @@
+---
+title: "Analysis of the neuropsychiatric symptoms in Latin America (10/66)"
+output: html_document
+date: "2022-11-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE)
+```
+
+### Open libraries
+
+```{r}
+library(epiR)       # for epi.conf() to calculate CIs for prevalence
+library(here)       # for easy file referencing by using the top-level directory of a file project
+library(knitr)
+library(labelled)   # for var_label() to get variable labels
+library(openxlsx)   # for write.xlsx()
+library(readxl)     # for read_excel()
+library(tableone)
+library(tidyverse)
+```
+
+What is the top-level of current project?
+
+```{r}
+here::here()
+```
+
+## Open data
+
+### Open 10/66 baseline dataset
+
+Source codes
+
+```{r}
+source(here::here("Script", "Functions", "Data process", "func_open_and_process_data.R"))
+source(here::here("Script", "Functions", "Data process", "func_compute_pd_variables.R"))
+```
+
+Set path for function input
+
+```{r}
+path = here::here("Data", "raw data", "baseline survey", "prevalence_survey_data_1_3.dta")
+```
+
+Open dataset
+
+```{r}
+data = open_and_process_data(path, "dta") # this function opens a Stata dataset (dta) and converts Stata's labelled variables into factors
+```
+
+### Process dataset
+
+Process Parkinsonism and PD variables
+
+```{r}
+data = compute_pd_variables(data)
+```
+
+Drop observations from China or India
+
+```{r}
+data = data %>% filter(!countryid %in% c("China", "India"))
+
+# drop unused factor levels
+data$countryid = droplevels(data$countryid)
+```
+
+Subset relevant variables
+
+```{r}
+varnames = data %>% 
+  select(houseid2, PARTICID, countryid, age, gender, rural, Nassets, anycare, illnocat, PCVA, cdem1066, PEDUC, zbtot, CAREEDUC, CARENEED, dsmdisab, starts_with("NPI"), starts_with("CARER"), starts_with("NEO1"), starts_with("NEO6"), starts_with("NEO4"), starts_with("NOE1"), pnism, JorgePD, combined) %>% 
+  names()
+
+data = data %>% select_if(names(.) %in% varnames)
+```
+
+Create variable = total number of the NPI symptoms present [0-12]
+
+```{r}
+temp = data %>% 
+  select(starts_with("NPI"), -ends_with("D"), -ends_with("DIS"), -ends_with("SEV"), -npisev, -npidis, -combined) %>% 
+  mutate(across(everything(), ~if_else(.x=="yes", 1, 0))) %>%
+  mutate(npi_sum = rowSums(., na.rm = TRUE),
+         npi_bin1 = if_else(npi_sum == 0, "no", "yes"),
+         npi_bin3 = if_else(npi_sum >= 3, "3 or more", "<3"),
+         npi_sum_cat = factor(case_when(is.na(npi_sum) ~ NA_character_,
+                                        npi_sum == 0 ~ "0",
+                                        npi_sum == 1 ~ "1",
+                                        npi_sum == 2 ~ "2",
+                                        TRUE ~ "3 or more"))) %>%
+  select(npi_sum, npi_bin1, npi_bin3, npi_sum_cat)
+  
+mydata = bind_cols(data, temp)
+```
+
+### List of neuropsychiatric symptoms
+
+```{r}
+npi = mydata %>% 
+  select(starts_with("NPI"), -starts_with("npi_")) %>% 
+  labelled::var_label() %>% 
+  as_tibble() %>% 
+  gather(key = variable, value = description) %>% 
+  mutate(description = str_sub(description, 8, -1), # removes the first 7 characters
+         description = str_remove(description, "\\-"), # remove all strings after '-'
+         description = str_trim(description)) # remove any leading or trailing white spaces
+
+kable(npi)
+```
+
+## Descriptive statistics
+
+### Table 1 Participant characteristics by group
+
+```{r}
+table1 = tableone::CreateTableOne(data = mydata,
+                         vars = c("age", "gender", "PEDUC", "Nassets", "rural", "illnocat", "dsmdisab", "npisev", "npidis"),
+                         factorVars = c("gender", "PEDUC", "Nassets", "rural", "illnocat"),
+                         strata = "combined")
+table1_tot = tableone::CreateTableOne(data = mydata,
+                         vars = c("age", "gender", "PEDUC", "Nassets", "rural", "illnocat", "dsmdisab", "npisev", "npidis"),
+                         factorVars = c("gender", "PEDUC", "Nassets", "rural", "illnocat"))
+
+save_table1 = print(table1, nonnormal = c("npisev", "npidis"), quote = FALSE, noSpaces = TRUE, printToggle = FALSE)
+save_table1_tot = print(table1_tot, nonnormal = c("npisev", "npidis"), quote = FALSE, noSpaces = TRUE, printToggle = FALSE)
+
+kable(save_table1)
+kable(save_table1_tot)
+
+write.csv(save_table1, file = here::here("Output", "Neuropsychiatric symptoms in PD paper", "Table1.csv"))
+write.csv(save_table1_tot, file = here::here("Output", "Neuropsychiatric symptoms in PD paper", "Table1 (total).csv"))
+```
+
+Check missingness of sociodemographic characteristics
+
+```{r}
+summary(table1_tot)
+```
+
+*Supplementary table showing difference in the characteristics of participants with dx versus those without*
+
+```{r}
+tempdata = mydata %>% 
+  select(combined, age, gender, PEDUC, Nassets, rural, illnocat, dsmdisab, npi_sum_cat, npisev, npidis) %>% 
+  mutate(missing = as.factor(if_else(!is.na(combined), "Has diagnosis", "Missing diagnosis")))
+
+supptable1 = tableone::CreateTableOne(data = tempdata,
+                         vars = c("age", "gender", "PEDUC", "Nassets", "rural", "illnocat", "dsmdisab", "npi_sum_cat", "npisev", "npidis"),
+                         factorVars = c("gender", "PEDUC", "Nassets", "rural", "illnocat"),
+                         strata = "missing")
+
+save_supptable1 = print(supptable1, nonnormal = c("npisev", "npidis"), quote = FALSE, noSpaces = TRUE, printToggle = FALSE)
+
+kable(save_supptable1)
+
+write.csv(save_supptable1, file = here::here("Output", "Neuropsychiatric symptoms in PD paper", "suppTable1.csv"))
+```
+
+### Table 2 Frequency and prevalence of neuropsychiatric symptoms by group (for individual symptoms and counts)
+
+**Histogram of the number of NPI symptoms per individual**
+
+```{r}
+temp1 = mydata %>% 
+  select(starts_with("NPI"), combined, npisev, npidis)
+
+temp2 = temp1 %>% 
+  select(-ends_with("D"), -ends_with("DIS"), -ends_with("SEV"), -npisev, -npidis, -combined) %>% 
+  mutate(across(everything(), ~if_else(.x=="yes", 1, 0))) %>% 
+  mutate(npi_sum = rowSums(.),
+         npi_sum_cat = factor(case_when(is.na(npi_sum) ~ NA_character_,
+                                        npi_sum == 0 ~ "0",
+                                        npi_sum == 1 ~ "1",
+                                        npi_sum == 2 ~ "2",
+                                        TRUE ~ "3 or more"))) %>% 
+  select(npi_sum, npi_sum_cat)
+
+hist(temp2$npi_sum)
+summary(temp2$npi_sum_cat)
+```
+
+**Frequency and prevalence of NPI symptoms by group**
+
+```{r}
+temp1 = bind_cols(temp1, temp2)
+
+table2 = tableone::CreateTableOne(data = temp1,
+                                  vars = c("NPI1", "NPI2", "NPI3", "NPI4", "NPI5", "NPI6",
+                                           "NPI7", "NPI8", "NPI9", "NPI10", "NPI11", "NPI12", "npi_sum_cat", "npisev", "npidis"),
+                                  factorVars = c("NPI1", "NPI2", "NPI3", "NPI4", "NPI5", "NPI6",
+                                           "NPI7", "NPI8", "NPI9", "NPI10", "NPI11", "NPI12", "npi_sum_cat"),
+                                  strata = "combined")
+
+table2_tot = tableone::CreateTableOne(data = temp1,
+                                  vars = c("NPI1", "NPI2", "NPI3", "NPI4", "NPI5", "NPI6",
+                                           "NPI7", "NPI8", "NPI9", "NPI10", "NPI11", "NPI12", "npi_sum_cat", "npisev", "npidis"),
+                                  factorVars = c("NPI1", "NPI2", "NPI3", "NPI4", "NPI5", "NPI6",
+                                           "NPI7", "NPI8", "NPI9", "NPI10", "NPI11", "NPI12", "npi_sum_cat"))
+
+save_table2 = print(table2, quote = FALSE, noSpaces = TRUE, printToggle = FALSE)
+save_table2_tot = print(table2_tot, quote = FALSE, noSpaces = TRUE, printToggle = FALSE)
+
+kable(save_table2)
+kable(save_table2_tot)
+
+write.csv(save_table2, file = here::here("Output", "Neuropsychiatric symptoms in PD paper", "Table2 NPI frequency (grouped).csv"))
+write.csv(save_table2_tot, file = here::here("Output", "Neuropsychiatric symptoms in PD paper", "Table2 NPI frequency (total).csv"))
+```
+
+Check missingness of NPI symptoms
+
+```{r}
+summary(table2_tot)
+```
+
+**Figure**
+
+```{r}
+temp3 = mydata %>% 
+  select(starts_with("NPI"), combined) %>% 
+  select(-ends_with("D"), -ends_with("DIS"), -ends_with("SEV"), combined) %>% 
+  mutate(across(c(NPI1:NPI12), ~if_else(.x=="yes", 1, 0)))
+
+get_prop = function(x) (sum(x, na.rm=TRUE) / length(na.omit(x))) * 100 # function to compute percentages
+  # what to do with those missing data on NPS??? excluded these individuals in the calculation of prevalence for now using na.omit(x)
+
+# apply function by group 
+output_list = by(temp3, temp3$combined, function(x){
+  prop = apply(x[,1:12], 2, get_prop)
+  prop
+})
+
+# combine output
+npi_prop_grouped = as.data.frame(do.call(rbind, output_list))
+
+npi_prop_grouped$combined = dimnames(npi_prop_grouped)[[1]]
+
+npi_prop_grouped = npi_prop_grouped %>% 
+  pivot_longer(cols = -combined,
+               names_to = "npi",
+               values_to = "pct") %>%
+  left_join(npi, by = c("npi"="variable"))
+```
+
+```{r}
+# order NPS by decreasing prevlence
+npi_order = npi_prop_grouped %>% 
+  filter(combined=="Parkinsonism and dementia") %>% 
+  arrange(desc(pct)) %>% 
+  pull(description)
+
+plot_npi_prev_grouped = npi_prop_grouped %>% 
+  mutate(description = factor(description, levels = npi_order),
+         combined = factor(combined, levels = c("Control", "Parkinsonism", "Dementia", "Parkinsonism and dementia"))) %>% 
+  ggplot(aes(y=pct, x=combined, fill=combined)) + 
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(pct,0), "%")), hjust=0.5, vjust=1, size=3) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(fill = "Diagnosis group",
+       x = "Diagnosis group",
+       y = "Prevalence (%)") +
+  facet_wrap(~description, nrow=2, ncol=6, dir = "h") +
+  theme_classic() +
+  theme(legend.position = "bottom",
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank()) #element_text(angle=35, vjust = 1, hjust=1)
+
+plot_npi_prev_grouped
+
+ggsave(here::here("Output", "Neuropsychiatric symptoms in PD paper", "npi_prev_group.tiff"), plot = plot_npi_prev_grouped, width = 24, height = 12, units = "cm")
+```
+
+### Table 3 Severity of neuropsychiatric symptoms by group
+
+```{r}
+npi_sev = mydata %>% 
+  filter(!is.na(combined)) %>% 
+  select(starts_with("NPI"), -ends_with("DIS"), -NPI1D, combined, -npisev) %>%
+  # only include participants who exhibit symptoms (i.e. as denominator)
+  mutate(NPI1 = if_else(NPI1 == "no", NA_character_, as.character(NPI1SEV)),
+         NPI2 = if_else(NPI2 == "no", NA_character_, as.character(NPI2SEV)),
+         NPI3 = if_else(NPI3 == "no", NA_character_, as.character(NPI3SEV)),
+         NPI4 = if_else(NPI4 == "no", NA_character_, as.character(NPI4SEV)),
+         NPI5 = if_else(NPI5 == "no", NA_character_, as.character(NPI5SEV)),
+         NPI6 = if_else(NPI6 == "no", NA_character_, as.character(NPI6SEV)),
+         NPI7 = if_else(NPI7 == "no", NA_character_, as.character(NPI7SEV)),
+         NPI8 = if_else(NPI8 == "no", NA_character_, as.character(NPI8SEV)),
+         NPI9 = if_else(NPI9 == "no", NA_character_, as.character(NPI9SEV)),
+         NPI10 = if_else(NPI10 == "no", NA_character_, as.character(NPI10SEV)),
+         NPI11 = if_else(NPI11 == "no", NA_character_, as.character(NPI11SEV)),
+         NPI12 = if_else(NPI12 == "no", NA_character_, as.character(NPI12SEV))) %>% 
+  select(combined, starts_with("NPI"), -ends_with("SEV")) 
+
+#head(npi_sev)
+
+# Overall percentages
+overall_freq_npi_sev = npi_sev %>% 
+  pivot_longer(NPI1:NPI12, names_to = "npi", values_to = "severity") %>%
+  left_join(npi, by = c("npi"="variable")) %>%  
+  select(-npi, -combined) %>%
+  filter(!is.na(severity)) %>% # remove observations who did not report symptoms or were missing data on severity
+  group_by(description) %>% 
+  count(severity) %>% 
+  ungroup()
+
+tot = overall_freq_npi_sev %>% 
+  group_by(description) %>% 
+  summarise(tot = sum(n))
+  
+# Grouped percentages
+grouped_freq_npi_sev = npi_sev %>%
+  pivot_longer(NPI1:NPI12, names_to = "npi", values_to = "severity") %>%
+  left_join(npi, by = c("npi"="variable")) %>%  
+  select(-npi) %>%
+  filter(!is.na(severity)) %>% # remove observations who did not report symptoms or were missing data on severity
+  group_by(combined, description) %>% 
+  count(severity) %>% 
+  ungroup()
+
+tot_grouped = grouped_freq_npi_sev %>% 
+  group_by(combined, description) %>% 
+  summarise(tot = sum(n))
+
+# Combine data
+overall_npi_sev = overall_freq_npi_sev %>% 
+  bind_rows(select(tot, description, n=tot) %>% mutate(severity="total")) %>% 
+  arrange(description) %>% 
+  left_join(tot, by = "description") %>%
+  mutate(pct = n/tot*100,
+         Total = paste0(n, " (", format(round(pct,1), nsmall=1), "%)")) %>%
+  select(-n, -tot, -pct)
+
+save_npi_sev = grouped_freq_npi_sev %>% 
+  bind_rows(select(tot_grouped, combined, description, n=tot) %>% mutate(severity="total")) %>% 
+  arrange(combined, description) %>% 
+  left_join(tot_grouped, by = c("combined", "description")) %>% 
+  mutate(pct = n/tot*100,
+         n_pct = paste0(n, " (", format(round(pct,1), nsmall=1), "%)")) %>%
+  select(-n, -tot, -pct) %>% 
+  pivot_wider(names_from = combined,
+              values_from = n_pct) %>% 
+  left_join(overall_npi_sev, by = c("description", "severity")) %>% 
+  mutate(severity = factor(severity, levels = c("total", "mild", "moderate", "severe"), labels = c("Total", "Mild", "Moderate", "Severe"))) %>% 
+  arrange(description, severity)
+
+# NPI order
+npi_order = npi %>% 
+  filter(grepl("[0-9]$", variable)) %>%  
+  pull(description)
+
+save_npi_sev = save_npi_sev %>% 
+  mutate(description = factor(description, levels = npi_order)) %>% 
+  arrange(description, severity) %>% 
+  select(description, severity, Total, everything())
+
+kable(save_npi_sev)
+
+write.csv(save_npi_sev, file = here::here("Output", "Neuropsychiatric symptoms in PD paper", "Table3 Severity of NPI by group.csv"))
+```
+
+```{r, eval=FALSE, include=FALSE}
+# Panelled pie charts
+
+to_plot_npi_sev = npi_sev %>% 
+  left_join(tot, by = c("combined", "description")) %>% 
+  mutate(pct = n/tot,
+         severity = factor(severity, levels = c("mild", "moderate", "severe"), labels = c("Mild", "Moderate", "Severe")),
+         label = paste0(round(pct*100,0),"%")) %>% 
+  group_by(combined, description) %>% 
+  mutate(cumulative = cumsum(n),
+         midpoint = cumulative-n/2)
+
+plot_npi_sev = ggplot(to_plot_npi_sev, aes(x="", y=pct, fill=severity)) +
+  geom_bar(width=1, stat="identity") +
+  coord_polar("y", start=0) +
+  #geom_text(aes(y=midpoint, label=label), size=2) +
+  scale_fill_manual(values = c("#00BA38", "#619CFF", "#F8766D")) +
+  labs(fill = "Severity") +
+  facet_grid(description ~ combined) +
+  theme_void()
+
+plot_npi_sev
+
+ggsave(here::here("Output", "Neuropsychiatric symptoms in PD paper", "npi_severity_group.png"), plot = plot_npi_sev, width = 10, height = 20, units = "cm")
+```
+
+### Table 4 Adjusted logistic regression model for the association between neuropsychiatric symptoms and diagnosis
+
+```{r, eval=FALSE, include=FALSE}
+model = glm(NPI1 ~ combined + age + gender + PEDUC, family = binomial(link="logit"), data = mydata)
+
+summary(model)
+```
+
+```{r}
+# Function to run cox models adjusted for age, sex, and region
+func_logistic_regression = function(data, outcome, exposure, adjustment){ # input outcome, exposure, and adjustment as characters
+  
+  # formula
+  formula = as.formula(paste(outcome, " ~ ", exposure, adjustment))
+  
+  # model
+  model = glm(formula, family = binomial(link="logit"), data = data)
+  
+  # numbers
+  tab = table(mydata[[exposure]], mydata[[outcome]])
+  
+  # Extract data
+  results = data.frame(
+    outcome = outcome,
+    level = dimnames(tab)[[1]],
+    case = tab[, "yes"],
+    noncase = tab[, "no"],
+    or = exp(model$coefficients)[1:4],
+    lci = exp(confint(model))[1:4,1][1:4],
+    uci = exp(confint(model))[1:4,2][1:4]
+    
+  )
+                       
+  return(results)
+}
+
+npi_ls = npi %>% select(variable) %>% 
+  filter(grepl("[0-9]$", variable)) %>%  # filters variables ending with a number
+  distinct() %>% 
+  pull()
+
+output_ls1 = map(npi_ls, func_logistic_regression, data=mydata, exposure="combined", adjustment="")
+output_ls2 = map(npi_ls, func_logistic_regression, data=mydata, exposure="combined", adjustment=" + age + gender + PEDUC + illnocat")
+output_ls3 = map(npi_ls, func_logistic_regression, data=mydata, exposure="combined", adjustment=" + age + gender + PEDUC + illnocat + CARERAGE + CARERSEX + CAREEDUC + CARERREL")
+output_ls4 = map(npi_ls, func_logistic_regression, data=mydata, exposure="combined", adjustment=" + age + gender + PEDUC + illnocat + CARERAGE + CARERSEX + CAREEDUC + CARERREL + countryid")
+```
+
+Process output data
+
+```{r}
+output_data1 = do.call(rbind, output_ls1) %>% 
+  left_join(npi, by = c("outcome" = "variable")) %>% 
+  mutate(ors = paste0(format(round(or,2), nsmall=2), " (", format(round(lci,2), nsmall=2), "-", format(round(uci,2), nsmall=2), ")")) %>% 
+  select(description, level, case, noncase, crude_ors = ors)
+
+output_data2 = do.call(rbind, output_ls2) %>% 
+  left_join(npi, by = c("outcome" = "variable")) %>% 
+  mutate(ors = paste0(format(round(or,2), nsmall=2), " (", format(round(lci,2), nsmall=2), "-", format(round(uci,2), nsmall=2), ")")) %>% 
+  select(description, level, adjusted_ors = ors)
+
+output_data3 = do.call(rbind, output_ls3) %>% 
+  left_join(npi, by = c("outcome" = "variable")) %>% 
+  mutate(ors = paste0(format(round(or,2), nsmall=2), " (", format(round(lci,2), nsmall=2), "-", format(round(uci,2), nsmall=2), ")")) %>% 
+  select(description, level, adjusted_ors = ors)
+
+output_data4 = do.call(rbind, output_ls4) %>% 
+  left_join(npi, by = c("outcome" = "variable")) %>% 
+  mutate(ors = paste0(format(round(or,2), nsmall=2), " (", format(round(lci,2), nsmall=2), "-", format(round(uci,2), nsmall=2), ")")) %>% 
+  select(description, level, adjusted_ors = ors)
+
+output_data = output_data1 %>% 
+  left_join(output_data2, by = c("description", "level")) %>% 
+  left_join(output_data3, by = c("description", "level")) %>% 
+  left_join(output_data4, by = c("description", "level")) 
+
+output_data
+
+write.csv(output_data, file = here::here("Output", "Neuropsychiatric symptoms in PD paper", "Table4 Logistic regression.csv"))
+```
+
+### Table 5 Clinically significant caregiver distress due to neuropsychiatric symptoms by group
+
+*Clinically significant distress was defined as having moderate, severe, or extreme distress*
+
+```{r}
+clinical_sig = mydata %>% 
+  select(NPI1D, starts_with("NPI"), -ends_with("SEV"), combined, -npidis, age, gender, PEDUC, illnocat, CARERAGE, CARERSEX, CAREEDUC, CARERREL, countryid) %>% 
+  # only include participants who exhibit symptoms (i.e. as denominator)
+  mutate(NPI1 = if_else(NPI1 == "no", NA_character_, as.character(NPI1D)),
+         NPI2 = if_else(NPI2 == "no", NA_character_, as.character(NPI2DIS)),
+         NPI3 = if_else(NPI3 == "no", NA_character_, as.character(NPI3DIS)),
+         NPI4 = if_else(NPI4 == "no", NA_character_, as.character(NPI4DIS)),
+         NPI5 = if_else(NPI5 == "no", NA_character_, as.character(NPI5DIS)),
+         NPI6 = if_else(NPI6 == "no", NA_character_, as.character(NPI6DIS)),
+         NPI7 = if_else(NPI7 == "no", NA_character_, as.character(NPI7DIS)),
+         NPI8 = if_else(NPI8 == "no", NA_character_, as.character(NPI8DIS)),
+         NPI9 = if_else(NPI9 == "no", NA_character_, as.character(NPI9DIS)),
+         NPI10 = if_else(NPI10 == "no", NA_character_, as.character(NPI10DIS)),
+         NPI11 = if_else(NPI11 == "no", NA_character_, as.character(NPI11DIS)),
+         NPI12 = if_else(NPI12 == "no", NA_character_, as.character(NPI12DIS))) %>% 
+  select(combined, starts_with("NPI"), -ends_with("DIS"), -NPI1D, age, gender, PEDUC, illnocat, CARERAGE, CARERSEX, CAREEDUC, CARERREL, countryid) 
+
+clinical_sig = clinical_sig %>%
+  # define non-clinically significant as having "not distressing", "minimal", or "mild" symptoms; define everything else as clinically significant (moderate, severe, extreme)
+  mutate(across(NPI1:NPI12, ~as.numeric(case_when(is.na(.x) ~ NA_character_,
+                                       .x == "no symptom, or not distressing" | .x == "minimal" | .x == "mild" ~ "0",
+                                       TRUE ~ "1")))) %>% 
+  mutate(count = rowSums(select(., NPI1:NPI12), na.rm=TRUE),
+         clinical_sig_nps3 = if_else(count>=3, 1, 0))
+
+#kable(clinical_sig)
+```
+
+```{r}
+get_prop2 = function(x) {
+
+  pct = sum(x, na.rm=TRUE) / length(na.omit(x)) * 100 # function to compute percentages
+  n = sum(x, na.rm=TRUE)
+  tot = length(na.omit(x))
+
+  output = paste0(n, "/", tot, " (", format(round(pct, 1), nsmall=1), "%)")
+  return(output)
+}
+ 
+# apply function by group 
+output_list = by(clinical_sig, clinical_sig$combined, function(x){
+  prop = apply(x[,-1], 2, get_prop2)
+  prop
+})
+
+# apply function overall
+overall_pct = apply(clinical_sig[,-1], 2, get_prop2)
+
+# combine output
+cs_prop_grouped = as.data.frame(do.call(rbind, output_list))
+
+cs_prop_grouped$combined = dimnames(cs_prop_grouped)[[1]]
+
+cs_prop_grouped = cs_prop_grouped %>% 
+  pivot_longer(cols = -combined,
+               names_to = "npi",
+               values_to = "pct") %>%
+  left_join(npi, by = c("npi"="variable")) %>% 
+  select(-npi) %>% 
+  pivot_wider(names_from = combined,
+              values_from = pct)
+
+cs_prop_grouped$Total = overall_pct
+
+kable(cs_prop_grouped)
+
+write.csv(cs_prop_grouped, file = here::here("Output", "Neuropsychiatric symptoms in PD paper", "Table5 Clinically significant symptoms.csv"))
+```
+
+Calculate prevalence and confidence interval using `epiR::epi.conf(,ctype="prop.single")` function
+
+```{r}
+get_prop3 = function(x) {
+
+  case = sum(x, na.rm=TRUE)
+  noncase = length(na.omit(x)) - case
+  
+  dat = as.matrix(cbind(case, noncase))
+  
+  temp = format(round(epi.conf(dat = dat, ctype = "prop.single")*100, digits = 0), nsmall=0)
+  
+  output = paste0(temp$est, "% (",  temp$lower, "%-", temp$upper, "%)")
+    
+  return(output)
+}
+ 
+# apply function by group 
+output_list = by(clinical_sig, clinical_sig$combined, function(x){
+  prop = apply(x[,-1], 2, get_prop3)
+  prop
+})
+
+# apply function overall
+overall_pct = apply(clinical_sig[,-1], 2, get_prop3)
+
+# combine output
+cs_prop_grouped = as.data.frame(do.call(rbind, output_list))
+
+cs_prop_grouped$combined = dimnames(cs_prop_grouped)[[1]]
+
+cs_prop_grouped = cs_prop_grouped %>% 
+  pivot_longer(cols = -combined,
+               names_to = "npi",
+               values_to = "pct") %>%
+  left_join(npi, by = c("npi"="variable")) %>% 
+  select(-npi) %>% 
+  pivot_wider(names_from = combined,
+              values_from = pct)
+
+cs_prop_grouped$Total = overall_pct
+
+kable(cs_prop_grouped)
+
+write.csv(cs_prop_grouped, file = here::here("Output", "Neuropsychiatric symptoms in PD paper", "Table5 Clinically significant symptoms (prevalence 95%CI).csv"))
+```
+
+What is the percentage of caregivers reporting at least one NPI symptom to be at least moderate distress?
+
+```{r}
+clinical_sig1 = clinical_sig %>% 
+  filter(!if_all(NPI1:NPI12, is.na)) %>%  # exclude participants who do not report any symptoms
+  rowwise() %>% 
+  mutate(sum = sum(across(starts_with("NPI")), na.rm=TRUE)) %>% 
+  mutate(any_cs = if_else(sum>=1, 1, 0)) %>% 
+  select(-starts_with("NPI"))
+
+summary(as.factor(clinical_sig1$any_cs))
+```
+
+Odds of 3+ NPS with clinically significant symptoms
+
+```{r}
+# Function to run cox models adjusted for age, sex, and region
+func_logistic_regression1 = function(data, outcome, exposure, adjustment){ # input outcome, exposure, and adjustment as characters
+  
+  # formula
+  formula = as.formula(paste(outcome, " ~ ", exposure, adjustment))
+  
+  # model
+  model = glm(formula, family = binomial(link="logit"), data = data)
+  
+  # numbers
+  tab = table(data[[exposure]], data[[outcome]])
+  
+  # Extract data
+  results = data.frame(
+    outcome = outcome,
+    level = dimnames(tab)[[1]],
+    case = tab[, "1"],
+    noncase = tab[, "0"],
+    or = exp(model$coefficients)[1:4],
+    lci = exp(confint(model))[1:4,1][1:4],
+    uci = exp(confint(model))[1:4,2][1:4]
+    
+  )
+                       
+  return(results)
+}
+
+
+output_ls1 = func_logistic_regression1(outcome="clinical_sig_nps3", data=clinical_sig, exposure="combined", adjustment="")
+output_ls2 = func_logistic_regression1(outcome="clinical_sig_nps3", data=clinical_sig, exposure="combined", adjustment=" + age + gender + PEDUC + illnocat")
+output_ls3 = func_logistic_regression1(outcome="clinical_sig_nps3", data=clinical_sig, exposure="combined", adjustment=" + age + gender + PEDUC + illnocat + CARERAGE + CARERSEX + CAREEDUC + CARERREL")
+output_ls4 = func_logistic_regression1(outcome="clinical_sig_nps3", data=clinical_sig, exposure="combined", adjustment=" + age + gender + PEDUC + illnocat + CARERAGE + CARERSEX + CAREEDUC + CARERREL + countryid")
+```
+
+Process output data
+
+```{r}
+output_data = do.call(rbind, list("crude"=output_ls1, "model1"=output_ls2, "model2"=output_ls3, "model3"=output_ls4)) %>% 
+  tibble::rownames_to_column('model') %>% 
+  mutate(ors = paste0(format(round(or,2), nsmall=2), " (", format(round(lci,2), nsmall=2), "-", format(round(uci,2), nsmall=2), ")")) %>% 
+  select(model, level, case, noncase, crude_ors = ors)
+
+output_data$model = gsub("\\..*", " ", output_data$model)
+
+output_data
+
+write.csv(output_data, file = here::here("Output", "Neuropsychiatric symptoms in PD paper", "Table4 Logistic regression clinical sig NPS3.csv"))
+```
+
+### Table 6 Caregiver's characteristics by group
+
+```{r}
+table6 = tableone::CreateTableOne(data = mydata,
+                         vars = c("CARERAGE", "CARERSEX", "CAREEDUC", "CARENEED", "CARERREL", "zbtot"),
+                         factorVars = c("CARERSEX", "CAREEDUC", "CARENEED", "npi_bin3"),
+                         strata = "combined")
+table6_tot = tableone::CreateTableOne(data = mydata,
+                         vars = c("CARERAGE", "CARERSEX", "CAREEDUC", "CARENEED", "CARERREL", "zbtot"),
+                         factorVars = c("CARERSEX", "CAREEDUC", "CARENEED", "npi_bin3"))
+
+save_table6 = print(table6, quote = FALSE, noSpaces = TRUE, printToggle = FALSE)
+save_table6_tot = print(table6_tot, quote = FALSE, noSpaces = TRUE, printToggle = FALSE)
+
+kable(save_table6)
+kable(save_table6_tot)
+
+write.csv(save_table6, file = here::here("Output", "Neuropsychiatric symptoms in PD paper", "Table6 Caregiver characteristics.csv"))
+```
+
+Get mean zarit score by the number of NPI
+
+```{r}
+mydata %>% 
+  group_by(combined, npi_bin3) %>% 
+  summarise(mean = mean(zbtot, na.rm=TRUE),
+            sd = sd(zbtot, na.rm=TRUE)) %>% 
+  mutate(across(c("mean", "sd"), ~format(round(.,2), nsmall=2))) %>% 
+  mutate(mean_sd = paste0(mean, " (", sd, ")")) 
+
+mydata %>% 
+  group_by(npi_bin3) %>% 
+  summarise(mean = mean(zbtot, na.rm=TRUE),
+            sd = sd(zbtot, na.rm=TRUE)) %>% 
+  mutate(across(c("mean", "sd"), ~format(round(.,2), nsmall=2))) %>% 
+  mutate(mean_sd = paste0(mean, " (", sd, ")")) 
+```

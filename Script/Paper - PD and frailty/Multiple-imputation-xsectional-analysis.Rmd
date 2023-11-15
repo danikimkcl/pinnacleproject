@@ -1,0 +1,537 @@
+---
+title: "Multiple imputation analysis of cross-sectional associations"
+output: html_document
+date: "2023-10-04"
+---
+
+Multiple imputation analysis of the cross-sectional associations between parkinsonism and PD with frailty (defined according to the Fried frailty phenotype, multidimensional frailty, and Rockwood frailty index) using the baseline 10/66 survey.
+
+## Open dataset and libraries
+
+Libraries
+```{r}
+library(cowplot)
+library(data.table)
+library(here)         # for easy file referencing by using the top-level directory of a file project
+library(gridGraphics) # for grid.grab()
+library(kableExtra)
+library(knitr)
+library(meta)
+library(mice)
+library(tidyverse)
+```
+
+Source codes
+```{r}
+source(here::here("Script", "Functions", "Data process", "func_open_and_process_data.R"))
+```
+
+Open Baseline phase data
+
+```{r}
+# Create data path
+path = here::here("Data", "raw data", "baseline survey", "prevalence_survey_data_1_3.dta")
+
+# Open and process data
+data_baseline = open_and_process_data(path, "dta") # this function opens a Stata dataset (dta) and converts Stata's labelled variables into factors
+
+# Subset participants in Latin America
+data_baseline = data_baseline %>% 
+  filter(centreid %in% c("Cuba", "DR", "Peru (urban)", "Peru (rural)", "Venezuela", "Mexico (urban)", "Mexico (rural)", "Puerto Rico"))
+
+# drop unused factor levels
+data_baseline$centreid = droplevels(data_baseline$centreid)
+data_baseline$countryid = droplevels(data_baseline$countryid)
+  
+data_baseline$countryid = factor(data_baseline$countryid, levels = c("Cuba", "DR", "Peru", "Venezuela", "Mexico", "Puerto Rico"),
+                        labels = c("Cuba", "Dominican Republic", "Peru", "Venezuela", "Mexico", "Puerto Rico"))
+
+# Select relevant variables for frailty 
+data_base = data_baseline %>% 
+  select(houseid2, PARTICID, countryid, centreid, age, gender, PMARRY, PEDUC, Nassets, illnocat, CARENEED, # demographic variables
+         NEO14G, NEO6AU, NEO6AL, NEO6BU, NEO6BL, NEO4E, NEO4F, NOE1, NEO14E, PCVA, PARK, # parkinsonism and PD variables
+         Q531, Q481, NEO12B, PDAS7, PACTIVE, # FP variables
+         cogscore, peyeint, pearint, ARMCIRC, # MF variables 
+         Q1705, q17912, cvadiag, cdem1066, PARTH, PCOUGH, PRESP, hyperten, heartisc,
+         PGUT, PSKIN, PTOLDDM, PEYE, PEAR, WSTCIRC, HIPCIRC, 
+         euro6, Q871, SRQ18, SRQ20, Q451) %>% 
+  mutate(whr = WSTCIRC/HIPCIRC)
+
+# View data
+temp = data_base %>% 
+  select(-houseid2, -PARTICID) %>%
+  mutate(PEDUC = fct_recode(PEDUC, NULL = "6"),
+         NOE1 = fct_recode(NOE1, NULL = "7")) %>% # exclude factor levels with very low counts
+  mutate(WSTCIRC = if_else(WSTCIRC>500, NA_real_, WSTCIRC)) %>% # exclude extreme values
+  mutate(across(c(everything(), -age, -cogscore, -ARMCIRC, -WSTCIRC, -HIPCIRC, -whr, -NEO12B), ~as.factor(.x)))
+summary(temp)
+
+temp %>% 
+  select_if(is.numeric) %>% 
+  map2(., .y=colnames(.), ~ggplot(temp, aes(x=.x)) +
+         geom_histogram() + 
+         xlab(.y)
+       )
+```
+
+## Calculate missingness in PD and frailty variables
+
+```{r}
+tab_missing = as.data.frame(map(temp, ~mean(is.na(.))*100)) %>% 
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Missing_pct") %>% 
+  mutate(Missing_pct = round(Missing_pct, 1))
+
+# Label variables
+demovars = c("age", "gender", "PMARRY", "PEDUC", "Nassets", "illnocat", "CARENEED", "countryid", "centreid")
+pdvars = c("NEO14G", "NEO6AU", "NEO6AL", "NEO6BU", "NEO6BL", "NEO4E", "NEO4F", "NOE1", "NEO14E", "PCVA", "PARK")
+fpvars = c("Q531", "Q481", "NEO12B", "PDAS7", "PACTIVE")
+mfvars = c("NEO12B", "PDAS7", "cogscore", "peyeint", "pearint", "ARMCIRC")
+fivars = c("Q1705", "q17912", "cvadiag", "cdem1066", "PARTH", "PCOUGH", "PRESP", "hyperten", "heartisc",
+         "PGUT", "PSKIN", "PTOLDDM", "PEYE", "PEAR", "WSTCIRC", "HIPCIRC", 
+         "euro6", "Q871", "SRQ18", "SRQ20", "Q451",
+         "Q531", "Q481", "PACTIVE", "cogscore", "ARMCIRC")
+
+tab_missing = tab_missing %>% 
+  mutate(demographic = if_else(Variable %in% demovars, "X", NA_character_),
+         pd = if_else(Variable %in% pdvars, "X", NA_character_),
+         fp = if_else(Variable %in% fpvars, "X", NA_character_),
+         mf = if_else(Variable %in% mfvars, "X", NA_character_),
+         fi = if_else(Variable %in% fivars, "X", NA_character_)) %>% 
+  arrange(Missing_pct)
+
+tab_missing
+
+path = here::here("Output", "PD and frailty paper", "Table_missing_vars.csv")
+write.csv(tab_missing, path)
+```
+
+The self-reported PD variable (`PARK`) has very high missingness, therefore exclude from the imputation model.
+
+Highest level of missingness is 11% (`NEO12B`), thus 10 imputations likely to be sufficient.
+
+## Multiple imputation
+
+```{r}
+# Create a separate df for mice
+toimpute = data_base %>% 
+  select(-houseid2, -PARTICID, -centreid, -PARK, -whr) %>%     # delete variables not required for imputation
+  mutate(PEDUC = fct_recode(PEDUC, NULL = "6"),
+         NOE1 = fct_recode(NOE1, NULL = "7")) %>%               # exclude factor levels with very low counts
+  mutate(WSTCIRC = if_else(WSTCIRC>500, NA_real_, WSTCIRC)) %>% # make extreme values missing
+  mutate(across(c(everything(), -age, -cogscore, -ARMCIRC, -WSTCIRC, -HIPCIRC, -NEO12B), ~as.factor(.x)))  # create factors
+  #%>%sample_n(1000) # select a random subset to analyse
+```
+
+### Impute data
+
+Using the mice package, impute 10 datasets using 10 iterations (check convergence later).
+
+```{r}
+# create initial predictor matrix and imputation methods
+ini = mice::mice(toimpute, maxit=0, print=F)
+pred = ini$pred
+method = ini$meth
+method
+
+# Modify predictor matrix if required
+#pred[, c("id", "source")]=0 # to exclude predictor from imutation process
+#method[c("gender")] = "logreg" # other methods are: pmm, norm, polyreg, polyr
+#method[c("PMARRY", "PEDUC", "Nassets", "illnocat", "CARENEED", "NEO14G", "NEO6AU", "NEO6AL", "NEO6BU", "NEO6BL", "NEO4E", "NEO4F", "NOE1", "NEO14E", "Q531", "Q481", "PDAS7", "PACTIVE", "Q1705", "q17912", "PARTH", "PCOUGH", "PRESP", "PGUT", "PSKIN", "PEYE", "PEAR", "Q871", "Q451")] = "pmm"
+
+impnum = 10 # 10 imputations
+itnum = 10 # 10 iterations
+
+# Conduct multiple imputation in mice
+impData = mice(toimpute, m=impnum, maxit=itnum, seed=123, method=method, predictorMatrix=pred, visitSequence="revmonotone", print=FALSE)
+```
+
+Save imputed data as RDS object
+```{r}
+# Save imputed data as rds file
+path = here::here("Output", "PD and frailty paper", "temp_imputed_data.rds")
+saveRDS(impData, file=path)
+#impData = readRDS(path)
+```
+
+### Imputation diagnostic checks
+
+```{r}
+# View imputed values, imputation matrix, predictor matrix and the visiting sequence
+head(impData$imp$hyperten)
+
+impMethod = impData$method
+impPred = impData$predictorMatrix
+impSeq = impData$vis # visiting sequence, the sequence with which mice() imputes incomplete variables
+  # visitSequence="revmonotone" ordered high to low proportion of missing data
+
+impMethod
+head(impPred[ ,1:10])
+impSeq
+```
+
+### Inspect distribution of imputed and original data
+
+Check there is no missing data
+
+```{r}
+#Now look at the "complete" data
+for (i in 1:impnum){
+ print(anyNA(data.table(complete(impData, i))))
+}
+```
+
+Density plot
+
+```{r}
+densityplot(impData)
+```
+Blue lines represent the observed data and the purple show the imputed data. The red points differ from each other, which represents uncertainty about the true values of missing data.
+
+### Convergence monitoring
+
+Mean of the imputed values for each iteration
+
+```{r}
+impData$chainMean # contains means of the imputed values for each iteration. 
+  # No. of chains = No. iteration
+  # a chain refers to the chain of regression models that is used to generate the imputed values
+```
+
+Trace plots
+
+```{r}
+plot(impData) # layout=c(col,row)
+```
+
+mice() runs m parallel chains, each with a certain number of iterations and imputes values from the final iteration. View trace plots to monitor convergence, which plot estimates against the number of iterations. If the variance between the imputation chain is almost equal to the variance within the chains, it is an indication of healthy convergence.
+
+## Analysis of multiply imputed datasets
+
+Compute new variables in each imputed dataset
+
+```{r}
+all.impdata = complete(impData, "long", include=TRUE)
+
+all.impdata = all.impdata %>% 
+  # compute waist-to-hip ratio
+  mutate(whr = WSTCIRC/HIPCIRC) %>% 
+  # compute FP
+  mutate(b_weight_loss = case_when(Q531==1 ~ 1, 
+                                   Q531==0 ~ 0, 
+                                   TRUE ~ NA_real_),
+         b_exhaust = case_when(Q481==1 | Q481==2 ~ 1, 
+                               Q481==0 ~ 0,
+                               TRUE ~ NA_real_),
+         walkdiff = case_when(PDAS7=="none" | PDAS7=="mild difficulty" | PDAS7=="moderate difficulty" ~ 0,
+                              PDAS7=="severe difficulty" | PDAS7=="extreme difficulty/ cannot do" ~ 1,
+                              TRUE ~ NA_real_),         
+         walkslow = case_when(NEO12B>=1 & NEO12B<16 ~ 0,
+                              NEO12B>=16 & NEO12B<992 ~ 1, 
+                              TRUE ~ NA_real_),
+         b_walkslow = case_when(walkdiff==0 & (is.na(NEO12B) | NEO12B==0) ~ 0,
+                                walkdiff==1 & (is.na(NEO12B) | NEO12B==0) ~ 1,
+                                walkdiff==0 & is.na(NEO12B) ~ 0,
+                                TRUE ~ walkslow),
+         b_underactive = if_else(PACTIVE=="not at all", 1, 0)) %>% 
+  mutate(b_fp.count = rowSums(.[c("b_weight_loss", "b_exhaust", "b_walkslow", "b_underactive")], na.rm=FALSE),
+         b_fp.frail = as.factor(if_else(b_fp.count>=2, 1, 0))) %>% 
+  # compute MF
+  mutate(b_cognition = if_else(cogscore<29.5, 1, 0),
+         b_sensory = case_when(peyeint=="yes" | pearint=="yes" ~ 1,
+                             is.na(peyeint) & is.na(pearint) ~ NA_real_,
+                             TRUE ~ 0),
+         b_nutrition = if_else(ARMCIRC<22, 1, 0),
+         b_physical = b_walkslow) %>% 
+  mutate(b_mf.count = rowSums(.[c("b_cognition", "b_sensory", "b_nutrition", "b_physical")], na.rm=FALSE),
+         b_mf.frail = as.factor(if_else(b_mf.count>=2, 1, 0))) %>% 
+  # Compute FI
+  mutate(b_fi_active = case_when(PACTIVE=="very physically active" ~ 0,
+                               PACTIVE=="fairly" ~ 0.3,
+                               PACTIVE=="not very" ~ 0.6,
+                               PACTIVE=="not at all" ~ 1,
+                               TRUE ~ NA_real_),
+         b_fi_weight_loss = case_when(Q531==0 ~ 0,
+                                    Q531==1 ~ 1,
+                                    TRUE ~ NA_real_),
+         b_fi_exhaust = case_when(Q481==0 ~ 0,
+                                Q481==1 ~ 0.5,
+                                Q481==2 ~ 1,
+                                TRUE ~ NA_real_),
+         b_fi_stroke = case_when(cvadiag=="no" ~ 0,
+                               cvadiag=="yes" ~ 1,
+                               TRUE ~ NA_real_),
+         b_fi_dementia = case_when(cdem1066=="non-case" ~ 0,
+                                 cdem1066=="case" ~ 1,
+                                 TRUE ~ NA_real_),
+         b_fi_arth = case_when(PARTH=="no problem" ~ 0,
+                             PARTH=="has problem, interferes not at all" ~ 0,
+                             PARTH=="has problem, interferes a little" ~ 0.5,
+                             PARTH=="has problem, interferes a lot" ~ 1,
+                             TRUE ~ NA_real_),
+         b_fi_cough = case_when(PCOUGH=="no problem" ~ 0,
+                             PCOUGH=="has problem, interferes not at all" ~ 0,
+                             PCOUGH=="has problem, interferes a little" ~ 0.5,
+                             PCOUGH=="has problem, interferes a lot" ~ 1,
+                             TRUE ~ NA_real_),
+         b_fi_resp = case_when(PRESP=="no problem" ~ 0,
+                             PRESP=="has problem, interferes not at all" ~ 0,
+                             PRESP=="has problem, interferes a little" ~ 0.5,
+                             PRESP=="has problem, interferes a lot" ~ 1,
+                             TRUE ~ NA_real_),
+         b_fi_hyperten = case_when(hyperten=="no" ~ 0,
+                                 hyperten=="yes" ~ 1,
+                                 TRUE ~ NA_real_),
+         b_fi_heartisc = case_when(heartisc=="no" ~ 0,
+                                 heartisc=="yes" ~ 1,
+                                 TRUE ~ NA_real_),
+         b_fi_gut = case_when(PGUT=="no problem" ~ 0,
+                            PGUT=="has problem, interferes not at all" ~ 0,
+                            PGUT=="has problem, interferes a little" ~ 0.5,
+                            PGUT=="has problem, interferes a lot" ~ 1,
+                            TRUE ~ NA_real_),
+         b_fi_skin = case_when(PSKIN=="no problem" ~ 0,
+                            PSKIN=="has problem, interferes not at all" ~ 0,
+                            PSKIN=="has problem, interferes a little" ~ 0.5,
+                            PSKIN=="has problem, interferes a lot" ~ 1,
+                            TRUE ~ NA_real_),
+         b_fi_diabetes = case_when(PTOLDDM=="no" ~ 0,
+                                 PTOLDDM=="yes" ~ 1,
+                                 TRUE ~ NA_real_),
+         #b_fi_copd = case_when(COAD=="does not met criteria for COPD" ~ 0,
+        #                     COAD=="meets criteria for COPD" ~ 1,
+        #                     TRUE ~ NA_real_),
+         b_fi_eye = case_when(PEYE=="no problem" ~ 0,
+                            PEYE=="has problem, interferes not at all" ~ 0,
+                            PEYE=="has problem, interferes a little" ~ 0.5,
+                            PEYE=="has problem, interferes a lot" ~ 1,
+                            TRUE ~ NA_real_),
+         b_fi_ear = case_when(PEAR=="no problem" ~ 0,
+                            PEAR=="has problem, interferes not at all" ~ 0,
+                            PEAR=="has problem, interferes a little" ~ 0.5,
+                            PEAR=="has problem, interferes a lot" ~ 1,
+                            TRUE ~ NA_real_),
+         b_fi_paralysis = case_when(Q1705==1 | Q1705==2 | q17912==1 ~ 1,
+                                  Q1705==0 | q17912==0 ~ 0,
+                                  TRUE ~ NA_real_),
+         b_fi_cognition = if_else(cogscore<29.5, 1, 0),
+         b_fi_interest = case_when(euro6=="symptom absent" ~ 0,
+                              euro6=="symptom present" ~ 1,
+                              TRUE ~ NA_real_),
+         b_fi_lonely = case_when(Q871==0 ~ 0,
+                               Q871==1 ~ 0.5,
+                               Q871==2 ~ 1,
+                              TRUE ~ NA_real_),
+         #b_fi_socialsupp = case_when(wenger=="family dependent" ~ 0,
+        #                    wenger=="locally integrated" ~ 0,
+         #                   wenger=="locally self-contained" ~ 1,
+         #                   wenger=="wider community focussed" ~ 0,
+        #                    wenger=="private" ~ 1,
+        #                    TRUE ~ NA_real_),
+         b_fi_nutrition = if_else(ARMCIRC<22, 1, 0), 
+         b_fi_whr = case_when(whr>2 | is.na(whr) ~ NA_real_,
+                            whr>=0.9 & gender=="male" ~ 1,
+                            whr>=0.85 & gender=="female" ~ 1,
+                            TRUE ~ 0),
+         #b_fi_walkdiff = case_when(walkdiff=="no or moderate difficulty in walking 1km" ~ 0, 
+        #                         walkdiff=="severe difficulty or cannot walk" ~ 1, 
+        #                         TRUE ~ NA_real_),
+         b_fi_tired = case_when(SRQ18=="yes, symptom present" | SRQ20=="yes, symptom present" ~ 1,
+                              SRQ18=="no" | SRQ20=="no" ~ 0,
+                              TRUE ~ NA_real_),
+         b_fi_looksfrail = case_when(Q451==0 ~ 0,
+                                Q451==1 ~ 0.5,
+                                Q451==2 ~ 1,
+                                TRUE ~ NA_real_))
+
+all.impdata = all.impdata %>% 
+  mutate(b_fi.count = rowSums(across(starts_with("b_fi_")), na.rm=TRUE)) %>% 
+  mutate(b_fi.score = b_fi.count/length(all.impdata %>% select(starts_with("b_fi_")) %>% names),
+         b_fi.frail = as.factor(if_else(b_fi.score>=0.25, 1, 0)),
+         b_fi.cat = factor(case_when(is.na(b_fi.score) ~ NA_character_,
+                                   b_fi.score>=0.25 ~ "Frail",
+                                   b_fi.score>=0.1 ~ "Pre-frail",
+                                   TRUE ~ "Non-frail"), levels = c("Non-frail", "Pre-frail", "Frail")),
+         b_fi.score0.1 = b_fi.score/0.1) # to estimate per 0.1 unit effect estimates
+
+all.impdata = all.impdata %>%
+    ## Parkinsonism
+    # 1. Index individuals with bradykinesia (NEO14G) AND rigidity (NEO6AU/AL/BU/AL)
+    mutate(pnism1 = if_else(((NEO14G=="somewhat slow movements" | NEO14G=="very slow movements") & (NEO6AU=="slightly increased tone" | NEO6AU=="much increased tone" |NEO6AL=="slightly increased tone" |NEO6AL=="much increased tone" | NEO6BU=="slightly increased tone" |NEO6BU=="much increased tone" | NEO6BL=="slightly increased tone" | NEO6BL=="much increased tone")), 1, 0)) %>%  
+    mutate(pnism1 = if_else(is.na(NEO14G) & (is.na(NEO6AU) | NEO6AU=="normal tone") & (is.na(NEO6AL) | NEO6AL=="normal tone") & (is.na(NEO6BU) | NEO6BU=="normal tone") & (is.na(NEO6BL) | NEO6BL=="normal tone"), NA_real_, pnism1)) %>% 
+    # Stata treats missing data differently (removes observations in the calculation when there is missing data), so the above line of codes does that in R
+    
+    # 2. Index individuals with bradykinesia (NEO14G) AND resting tremor (NEO4E/F)
+    mutate(pnism2 = if_else(((NEO14G=="somewhat slow movements" | NEO14G=="very slow movements") & ((!NEO4E=="no tremor") | (!NEO4F=="no tremor"))), 1, 0)) %>% 
+    
+    # 3. Index individuals with either #1 or #2
+    mutate(pnism = if_else(pnism1==1 | pnism2==1, 1, pnism1)) %>% 
+    select(-pnism1, -pnism2) %>% 
+
+    ## Parkinson's disease
+    mutate(PD = if_else(pnism==1 & (NOE1=="normal upgaze" & NEO14E=="normal gait" & PCVA=="no"), 1, 0)) %>% 
+    mutate(PD = if_else(is.na(pnism) & (is.na(NOE1) | is.na(NEO14E) | is.na(PCVA)), NA_real_, PD))
+
+# Convert back to a mids object
+new_impData = as.mids(all.impdata)
+```
+
+## Baseline characteristics
+
+Mean age
+```{r, eval=FALSE}
+# Compute mean and standard deviation in each imputed dataset
+pool_mean = with(all.impdata, by(all.impdata, .imp, function(x) mean(x$age)))
+pool_mean
+
+Reduce("+",pool_mean)/length(pool_mean)
+sd(pool_mean) # sd for the mean over the imputed datasets
+```
+
+SD age
+```{r, eval=FALSE}
+# Compute mean and standard deviation in each imputed dataset
+pool_mean = with(all.impdata, by(all.impdata, .imp, function(x) sd(x$age)))
+pool_mean
+
+Reduce("+",pool_mean)/length(pool_mean)
+sd(pool_mean) # sd for the mean over the imputed datasets
+```
+
+Prevalence of demographic factors
+```{r, eval=FALSE}
+# Compute mean and standard deviation in each imputed dataset
+pool_prev = with(all.impdata, by(all.impdata, .imp, function(x) c(summary(x$PEDUC),
+                                                                  summary(x$PEDUC)/1000,
+                                                                  summary(x$Nassets))))
+pool_prev
+
+Reduce("+",pool_prev)/length(pool_prev)
+```
+
+## Logistic regression
+
+```{r}
+func_logreg = function(data, outcome, exposure, adj){
+  
+  # Create an empty output df
+  output = data.frame(
+    outcome = NA,
+    exposure = NA,
+    study.site = NA,
+    ors = NA,
+    estimate = NA,
+    std.error = NA
+  )
+  
+  # List countries to iterate logistic regression through
+  #countries = c("Cuba", "DR", "Peru (urban)", "Peru (rural)", "Venezuela", "Mexico (urban)", "Mexico (rural)", "Puerto Rico")
+  countries = c("Cuba", "Dominican Republic", "Peru", "Venezuela", "Mexico", "Puerto Rico")
+  
+  for (i in countries){
+    # logistic regression
+    fit = with(data=data, {
+      formula = as.formula(paste0(outcome, " ~ ", exposure, adj)) # formula for the logistic regression needs to be inside the with() block as we are not passing data= into the modelling function. Otherwise, objects will not be identified
+      exp=glm(formula, family=binomial(link='logit'), subset=countryid==i) # make sure subset column is correct - either centreid or countryid
+      }) 
+  
+    temp = summary(pool(fit), conf.int=TRUE, exponentiate=TRUE) %>% 
+            mutate(ors = paste0(format.pval(round(estimate,2),nsmall=2), " (", format.pval(round(`2.5 %`,2),nsmall=2),"-", format.pval(round(`97.5 %`,2),nsmall=2),")")) %>% 
+            mutate(estimate = log(estimate)) %>% 
+            select(exposure=term, ors, estimate, std.error)
+    
+    temp$outcome = outcome # label outcome
+    temp$study.site = i #label study site
+    
+    temp = temp[temp$exposure==exposure, ] # select ORs for exposure of interest
+    
+    output = bind_rows(output, temp)
+  
+  }
+  
+  return(output)
+  
+}
+
+```
+
+Run models
+
+```{r, message=FALSE, warning=FALSE}
+adjustments = " + age + gender + PEDUC"
+
+################# Parkinsonism #####################
+
+ors_pnism_fp_adj = func_logreg(data=new_impData, outcome="b_fp.frail", exposure="pnism", adj=adjustments)
+ors_pnism_mf_adj = func_logreg(data=new_impData, outcome="b_mf.frail", exposure="pnism", adj=adjustments)
+ors_pnism_fi_adj = func_logreg(data=new_impData, outcome="b_fi.frail", exposure="pnism", adj=adjustments)
+
+################# PD #####################
+
+ors_pd_fp_adj = func_logreg(data=new_impData, outcome="b_fp.frail", exposure="PD", adj=adjustments)
+ors_pd_mf_adj = func_logreg(data=new_impData, outcome="b_mf.frail", exposure="PD", adj=adjustments)
+ors_pd_fi_adj = func_logreg(data=new_impData, outcome="b_fi.frail", exposure="PD", adj=adjustments)
+```
+
+## Logistic regression: meta-analysis
+
+Run random-effects model, assumes there are 2 sources of error: 1) sampling error and 2) variance from the fact that included study sites are not from a single, homogeneous population, thus there is distribution of true effect sizes. Thus, the random-effects model aims to model the mean of the distribution of true effects.
+
+Create function to plot forest plot
+
+```{r}
+plot_forest_meta = function(results){
+  
+  mgen = meta::metagen(TE = estimate,                           # make sure log(OR) than OR only
+                       seTE = std.error,
+                       studlab = study.site,
+                       sm = "OR",
+                       fixed = TRUE,
+                       random = FALSE,
+                       method.tau = "DL",                       # DerSimonian-Laird estimator
+                       hakn = TRUE,                             # Hartung-Knapp adjustment of SEs
+                       prediction = FALSE,                       # the above line and this line allow more   uncertainty in the estimation of between-study heterogeneity and appropriate for use in random-effects   meta-analysis
+                       data = results)
+  
+  meta::forest(mgen, 
+             rightlabs = c("OR", "95% CI", "Weight"),
+             print.tau2 = FALSE,
+             leftcols = c("studlab"))
+  
+  plot = grid::grid.grab() 
+  
+  return(plot)
+
+}
+
+```
+
+Plot
+
+```{r, fig.width = 10, fig.height = 6}
+plot_pnism_fp_adj = plot_forest_meta(ors_pnism_fp_adj[-c(1), ])
+plot_pnism_mf_adj = plot_forest_meta(ors_pnism_mf_adj[-c(1), ])
+plot_pnism_fi_adj = plot_forest_meta(ors_pnism_fi_adj[-c(1), ])
+plot_pd_fp_adj = plot_forest_meta(ors_pd_fp_adj[-c(1), ])
+plot_pd_mf_adj = plot_forest_meta(ors_pd_mf_adj[-c(1), ])
+plot_pd_fi_adj = plot_forest_meta(ors_pd_fi_adj[-c(1), ])
+```
+
+## Combine and save outputs
+
+```{r}
+plot_combined_pnism_adj = cowplot::plot_grid(plot_pnism_fp_adj, plot_pnism_mf_adj, plot_pnism_fi_adj,
+                                         align = "hv",
+                                         labels = "AUTO", 
+                                         scale = 0.5,
+                                         ncol = 1)
+
+ggsave(plot = plot_combined_pnism_adj, filename = here::here("Output", "PD and frailty paper", "plots", "mi_ors_pnism_frailty_adj.png"), width = 18, height = 24, units = "cm")
+
+plot_combined_pd_adj = cowplot::plot_grid(plot_pd_fp_adj, plot_pd_mf_adj, plot_pd_fi_adj,
+                                         align = "hv",
+                                         labels = "AUTO", 
+                                         scale = 0.5,
+                                         ncol = 1)
+
+ggsave(plot = plot_combined_pd_adj, filename = here::here("Output", "PD and frailty paper", "plots", "mi_ors_pd_frailty_adj.png"), width = 18, height = 24, units = "cm")
+```

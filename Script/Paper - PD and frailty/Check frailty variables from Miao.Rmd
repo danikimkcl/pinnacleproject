@@ -1,0 +1,304 @@
+---
+title: "Check frailty variables from Miao"
+output: html_document
+date: "2023-08-08"
+---
+
+## Open dataset
+
+Source codes
+```{r}
+source(here::here("Script", "Functions", "Data process", "func_open_and_process_data.R"))
+```
+
+### Open Miao's data 
+
+Set path for function input 
+```{r}
+path = "C:/Users/k2258693/OneDrive - King's College London/Desktop/PINNACLE project/6 Paper PD and frailty/Stata files from Miao/Frailty_dataset_Miao_for_Dani.dta"
+```
+
+Open dataset
+```{r}
+data = open_and_process_data(path, "dta") # this function opens a Stata dataset (dta) and converts Stata's labelled variables into factors
+```
+
+Drop observations from China or India
+```{r}
+data = data %>% filter(centreid %in% c("Cuba", "DR", "Peru (urban)", "Peru (rural)", "Venezuela", "Mexico (urban)", "Mexico (rural)", "Puerto Rico"))
+
+# drop unused factor levels
+data$centreid = droplevels(data$centreid)
+```
+
+Subset relevant data
+```{r}
+data_miao = data %>% 
+  select(HOUSEID, PARTICID, houseid2, countryid, centreid, FR_weight_loss, FR_exhaust, FR_walkslow, FR_underactive, cogscore, peyeint, pearint, FR_armdic, contains("miao"), contains("frail"), NEO12B, PDAS7, PACTIVE, Q531, Q481, ARMCIRC)
+```
+
+### Open my data
+
+Baseline phase
+
+```{r}
+path = here::here("Data", "raw data", "baseline survey", "prevalence_survey_data_1_3.dta")
+data = open_and_process_data(path, "dta") # this function opens a Stata dataset (dta) and converts Stata's labelled variables into factors
+data = data %>% filter(centreid %in% c("Cuba", "DR", "Peru (urban)", "Peru (rural)", "Venezuela", "Mexico (urban)", "Mexico (rural)", "Puerto Rico"))
+# drop unused factor levels
+data$centreid = droplevels(data$centreid)
+data_dani = data %>% select(houseid2, PARTICID, countryid, centreid, FR_weight_loss, FR_exhaust, FR_walkslow, FR_underactive, cogscore, peyeint, pearint, FR_armdic, contains("frail"), NEO12B, PDAS7, PACTIVE, Q531, Q481, ARMCIRC)
+
+temp = data_dani %>% 
+  mutate(across(c(starts_with("FR"), contains("frail"), pearint, peyeint, NEO12B, PDAS7, PACTIVE, Q531, Q481), ~as.factor(.x)))
+
+summary(temp)
+```
+
+Incidence phase
+
+```{r}
+# Merge in follow-up status at incidence phase
+path = here::here("Data", "raw data", "fu folder from Matthew", "incidence cohort (all survey outcomes)", "other countries", "status_outcome (survey cohort)_1_0.sav")
+status_outcome = open_and_process_data(path, "sav")
+
+# Merge in dependency data from incidence phase
+path = here::here("Data", "raw data", "fu folder from Matthew", "incidence cohort (all survey outcomes)", "other countries", "full follow up_1_2.dta")
+data_full_fu12 = open_and_process_data(path, "dta")
+
+# Select frailty variables from incidence phase
+data_full_fu12 = data_full_fu12 %>% 
+  select(centreid, HOUSEID, PARTICID, f_cogscore, f_PEYE, f_PEAR, f_NEO12B, f_PDAS7, f_PACTIVE, f_Q531, f_Q481, f_ARMCIRC) %>% 
+  mutate(centreid_num = case_when(centreid == "Cuba" ~ 10,
+                                  centreid == "DR" ~ 20,
+                                  centreid == "Peru (urban)" ~ 30,
+                                  centreid == "Peru (rural)" ~ 40,
+                                  centreid == "Venezuela" ~ 50,
+                                  centreid == "Mexico (urban)" ~ 60,
+                                  centreid == "Mexico (rural)" ~ 70,
+                                  centreid == "China (urban)" ~ 100,
+                                  centreid == "China (rural)" ~ 110,
+                                  centreid == "Puerto Rico" ~ 200)) %>% 
+  mutate(HOUSEID = stringr::str_pad(HOUSEID, 4, pad="0")) %>% 
+  mutate(houseid2 = as.numeric(paste0(centreid_num, HOUSEID))) %>% 
+  select(-HOUSEID, -centreid, -centreid_num)
+
+status_outcome = status_outcome %>% 
+  mutate(centreid_num = case_when(centreid == "Cuba" ~ 10,
+                                  centreid == "DR" ~ 20,
+                                  centreid == "Peru (urban)" ~ 30,
+                                  centreid == "Peru (rural)" ~ 40,
+                                  centreid == "Venezuela" ~ 50,
+                                  centreid == "Mexico (urban)" ~ 60,
+                                  centreid == "Mexico (rural)" ~ 70,
+                                  centreid == "China (urban)" ~ 100,
+                                  centreid == "China (rural)" ~ 110,
+                                  centreid == "Puerto Rico" ~ 200)) %>% 
+  mutate(HOUSEID = stringr::str_pad(HOUSEID, 4, pad="0")) %>% 
+  mutate(houseid2 = as.numeric(paste0(centreid_num, HOUSEID))) %>% 
+  select(-HOUSEID, -centreid, -centreid_num)
+
+data_full_fu12 = data_full_fu12 %>% 
+  left_join(status_outcome, by = c("houseid2", "PARTICID")) 
+
+inc_data = data_full_fu12
+
+temp = data_full_fu12 %>% mutate(across(c(f_PEYE, f_PEAR, f_NEO12B, f_PDAS7, f_PACTIVE, f_Q531, f_Q481), ~as.factor(.x)))
+summary(temp)
+
+#### Incidence phase data excludes participants who died, refused, were uncontactable or not recorded
+
+# Merge cohort to baseline data
+#data2 = data_full_fu12 %>% left_join(data2, by = c("houseid2", "PARTICID"))
+```
+
+## Code up and compare frailty phenotype
+
+### Replicate Miao's data
+
+#### Summary of variables
+```{r}
+temp = data_miao %>% 
+  mutate(across(c(starts_with("FR_"), ends_with("miao"), ends_with("miao2"), starts_with("frail")), ~as.factor(.x)))
+
+summary(temp)
+```
+
+#### Replicate FP variables at baseline
+
+```{r}
+# Compute baseline frailty variables
+data_temp = data_miao %>% 
+  mutate(weight_loss_dani = case_when(Q531==1 ~ 1, 
+                                      Q531==0 ~ 0, 
+                                      TRUE ~ NA_real_),
+         exhaust_dani = case_when(Q481==1 | Q481==2 ~ 1, 
+                                  Q481==0 ~ 0,
+                                  TRUE ~ NA_real_),
+         walkdiff = case_when(PDAS7=="none" | PDAS7=="mild difficulty" | PDAS7=="moderate difficulty" ~ 0,
+                              PDAS7=="severe difficulty" | PDAS7=="extreme difficulty/ cannot do" ~ 1,
+                              TRUE ~ NA_real_),         
+         walkslow = case_when(NEO12B>=1 & NEO12B<16 ~ 0,
+                              NEO12B>=16 & NEO12B<992 ~ 1, 
+                              TRUE ~ NA_real_),
+         walkslow_dani = case_when(walkdiff==0 & (is.na(NEO12B) | NEO12B==0) ~ 0,
+                                   walkdiff==1 & (is.na(NEO12B) | NEO12B==0) ~ 1,
+                                   walkdiff==0 & is.na(NEO12B) ~ 0,
+                                   TRUE ~ walkslow),
+         underactive_dani = if_else(PACTIVE=="not at all", 1, 0)) %>% 
+  mutate(fp_count = rowSums(.[c("weight_loss_dani", "exhaust_dani", "walkslow_dani", "underactive_dani")], na.rm=FALSE),
+         fp_frail = as.factor(if_else(fp_count>=2, 1, 0)))
+```
+
+```{r}
+summary(as.factor(data_temp$weight_loss_dani))
+summary(as.factor(data_temp$weight_loss_miao))
+
+summary(as.factor(data_temp$exhaust_dani))
+summary(as.factor(data_temp$exhausted_miao))
+
+summary(as.factor(data_temp$walkslow_dani))
+summary(as.factor(data_temp$walkslow_miao))
+
+summary(as.factor(data_temp$underactive_dani))
+summary(as.factor(data_temp$underactive_miao))
+
+# Overall frail count
+summary(data_temp$fp_frail)                       # my replication of miao's code
+summary(as.factor(data_temp$frailty_status_miao)) # miao's code
+summary(as.factor(data_temp$frail2))              # original FP variable in 10/66
+```
+
+#### Replicate FP variables at follow-up
+
+```{r}
+# Compute baseline frailty variables
+data_temp = inc_data %>% 
+  mutate(weight_loss_dani = case_when(f_Q531==1 ~ 1, 
+                                      f_Q531==0 ~ 0, 
+                                      TRUE ~ NA_real_),
+         exhaust_dani = case_when(f_Q481==1 | f_Q481==2 ~ 1, 
+                                  f_Q481==0 ~ 0,
+                                  TRUE ~ NA_real_),
+         walkdiff = case_when(f_PDAS7=="none" | f_PDAS7=="mild difficulty" | f_PDAS7=="moderate difficulty" ~ 0,
+                              f_PDAS7=="severe difficulty" | f_PDAS7=="extreme difficulty/ cannot do" ~ 1,
+                              TRUE ~ NA_real_),
+         walkslow_dani = case_when(f_NEO12B>=1 & f_NEO12B<16 ~ 0,
+                                   f_NEO12B>=16 & f_NEO12B<=900 ~ 1, 
+                                   walkdiff==1 & (is.na(f_NEO12B) | f_NEO12B==0) ~ 1,
+                                   walkdiff==0 & (is.na(f_NEO12B) | f_NEO12B==0) ~ 0,
+                                   walkdiff==0 & is.na(f_NEO12B) ~ 0,
+                                   TRUE ~ NA_real_),
+         underactive_dani = case_when(f_PACTIVE=="not at all" ~ 1, 
+                                      is.na(f_PACTIVE) ~ NA_real_,
+                                      TRUE ~ 0)) %>% 
+  mutate(fp_count = rowSums(.[c("weight_loss_dani", "exhaust_dani", "walkslow_dani", "underactive_dani")], na.rm=FALSE),
+         fp_frail = as.factor(if_else(fp_count>=2, 1, 0)))
+```
+
+```{r}
+# Merge in Miao's follow-up variables
+## merge on houseid2 (composite of centreid and houseid) AND PARTICID
+
+data_compare = data_miao %>% 
+  select(houseid2, PARTICID, f_weight_loss_miao, f_exhausted_miao, f_walkslow_miao, f_underactive_miao, f_frailty_status_miao) %>% 
+  left_join(select(data_temp, houseid2, PARTICID, weight_loss_dani, exhaust_dani, walkslow_dani, underactive_dani, fp_frail), by = c("houseid2", "PARTICID")) %>% 
+  filter(complete.cases(.))
+
+# Do mine and Miao's coding match?
+all(data_compare$f_weight_loss_miao == data_compare$weight_loss_dani) # all() tests whether all logicals are true
+all(data_compare$f_exhausted_miao == data_compare$exhaust_dani) 
+all(data_compare$f_walkslow_miao == data_compare$walkslow_dani) 
+all(data_compare$f_underactive_miao == data_compare$underactive_dani) 
+
+# All match except walkslow variable
+length(which((data_compare$f_walkslow_miao == data_compare$walkslow_dani)==FALSE)) # 390 differences- why??
+
+# Overall frail count
+summary(data_compare$fp_frail)                          # my replication of miao's code
+summary(as.factor(data_compare$f_frailty_status_miao))  # miao's code
+```
+
+#### My data (move to another R markdown)
+
+Calculate frailty scores, including missing data as '0'
+```{r}
+# FP at baseline - calculate the individual FP variables from scratch
+test = data_dani %>% 
+  mutate(weight_loss_dani = if_else(Q531==1, 1, 0),
+         exhaust_dani = if_else(Q481==1, 1, 0),
+         walkslow_dani = if_else(NEO12B>16, 1, 0),
+         walkslow2_dani = if_else(NEO12B>16 | PDAS7=="severe difficulty" | PDAS7=="extreme difficulty/ cannot do", 1, 0),
+         underactive_dani = if_else(PACTIVE=="not at all", 1, 0)) %>% 
+  mutate(fp_count = rowSums(.[c("weight_loss_dani", "exhaust_dani", "walkslow_dani", "underactive_dani")], na.rm=TRUE),
+         fp_frail = as.factor(if_else(fp_count>=2, 1, 0))) %>% 
+  mutate(cognition = if_else(cogscore<29.5, 1, 0),
+         sensory = case_when(peyeint=="yes" | pearint=="yes" ~ 1,
+                             is.na(peyeint) & is.na(pearint) ~ NA_real_,
+                             TRUE ~ 0),
+         nutrition = if_else(ARMCIRC<22, 1, 0),
+         physical = walkslow_dani) %>% 
+  mutate(mf_count = rowSums(.[c("cognition", "sensory", "nutrition", "physical")], na.rm=TRUE),
+         mf_frail = as.factor(if_else(mf_count>=2, 1, 0)))
+
+# FP at baseline - calculate using existing FP variables
+data_dani = data_dani %>% 
+  mutate(fp_count = rowSums(.[c("FR_weight_loss", "FR_exhaust", "FR_walkslow", "FR_underactive")], na.rm=TRUE),
+         fp_frail = as.factor(if_else(fp_count>=2, 1, 0))) %>% 
+  mutate(cognition = if_else(cogscore<29.5, 1, 0),
+         sensory = case_when(peyeint=="yes" | pearint=="yes" ~ 1,
+                             is.na(peyeint) & is.na(pearint) ~ NA_real_,
+                             TRUE ~ 0),
+         nutrition = FR_armdic,
+         physical = FR_walkslow) %>% 
+  mutate(mf_count = rowSums(.[c("cognition", "sensory", "nutrition", "physical")], na.rm=TRUE),
+         mf_frail = as.factor(if_else(mf_count>=2, 1, 0)))
+
+# FP at follow-up - calculate the individual FP variables from scratch
+test2 = inc_data %>% 
+  mutate(weight_loss_dani = if_else(f_Q531==1, 1, 0),
+         exhaust_dani = if_else(f_Q481==1, 1, 0),
+         walkslow_dani = if_else(f_NEO12B>16, 1, 0),
+         walkslow2_dani = if_else(f_NEO12B>16 | f_PDAS7=="severe difficulty" | f_PDAS7=="extreme difficulty/ cannot do", 1, 0),
+         underactive_dani = if_else(f_PACTIVE=="not at all", 1, 0)) %>% 
+  mutate(fp_count = rowSums(.[c("weight_loss_dani", "exhaust_dani", "walkslow_dani", "underactive_dani")], na.rm=TRUE),
+         fp_frail = as.factor(if_else(fp_count>=2, 1, 0))) %>% 
+  mutate(cognition = if_else(f_cogscore<29.5, 1, 0),
+         sensory = case_when(f_PEYE=="yes" | f_PEAR=="yes" ~ 1,
+                             is.na(f_PEYE) & is.na(f_PEAR) ~ NA_real_,
+                             TRUE ~ 0),
+         nutrition = if_else(f_ARMCIRC<22, 1, 0),
+         physical = walkslow_dani) %>% 
+  mutate(mf_count = rowSums(.[c("cognition", "sensory", "nutrition", "physical")], na.rm=TRUE),
+         mf_frail = as.factor(if_else(mf_count>=2, 1, 0)))
+
+
+summary(test$fp_frail)
+summary(data_dani$fp_frail)
+
+summary(test$mf_frail)
+summary(data_dani$mf_frail)
+```
+
+```{r}
+summary(as.factor(test$weight_loss_dani))
+summary(as.factor(data_dani$FR_weight_loss))
+
+
+summary(as.factor(test$exhaust_dani))
+summary(as.factor(data_dani$FR_exhaust))
+
+
+summary(as.factor(test$walkslow_dani))
+summary(as.factor(data_dani$FR_walkslow))
+
+
+summary(as.factor(test$underactive_dani))
+summary(as.factor(data_dani$FR_underactive))
+```
+
+```{r}
+summary(as.factor(data_dani$frail2))
+summary(as.factor(data_dani$multifrail))
+```
+

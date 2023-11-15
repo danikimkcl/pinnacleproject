@@ -1,0 +1,271 @@
+---
+title: "Missing data analysis 10/66"
+output:
+  html_document
+---
+
+```{r setup-chunk, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message=FALSE, 
+                      warning=FALSE)
+
+options(kableExtra.auto_format = FALSE) # this must be set before loading the kableExtra package. Otherwise, the kable_paper does not render properly when document is knit
+```
+
+# A bit about missing data
+
+**Types of missing data**
+
+1)  **Missing completely at random (MCAR)** - If missing data is unrelated to any other observed or unobserved variable, i.e. there is no *systematic* patterns in missing data. In these cases, you can consider complete cases to be a simple ranom sample from the larger dataset. Not a realistic assumption!
+
+2)  **Missing at random (MAR)** - If missing data is related to other *observed* variables but still independent on its own unobserved value. In this case, removing incomplete observations makes the sample less representative. E.g. grip strength is missing because the dynanometer was broken.
+
+3)  **Not missing at random (NMAR)** - If missing data is neither MCAR and MAR, it is not missing at random and missing depends on its own unobserved values. Again, dropping incomplete data leads to bias. E.g. grip strength is missing because person is too weak to attend health centre.
+
+------------------------------------------------------------------------
+
+# Open libraries and data
+
+## Libraries
+
+```{r, results='hide'}
+#Clear environment `rm(list=ls(all.names=TRUE))`
+# Libraries required
+library(ggpubr)
+library(glue)
+library(gridExtra)           # panel plots
+library(haven)               # for opening Stata dta files and converting relevant variables into factors as_factor()
+library(here)                # for easy file referencing by using the top-level directory of a file project
+library(Hmisc)               # html() is a Hmisc function that improves look of Rmd output
+library(kableExtra)
+library(knitr)               # kable() is a knitr function that lets you fit whole table in html output
+library(naniar)              # explore missing
+library(readxl)
+library(rmarkdown)
+library(tableone)
+library(tidyverse)
+library(VIM)                 # explore missing
+```
+
+## Open and process data
+
+```{r}
+# First, open source codes which contain codes to process data:
+source(here::here("Script", "Functions", "Data process", "func_open_and_process_data.R"))
+```
+
+### 10/66 baseline dataset
+
+```{r}
+# here::here("Data", "raw data", "baseline survey", "prevalence_survey_data_1_3.dta")
+# using here() means that file paths can be created from any physical place as long as fold structure is equivalent
+path = here::here("Data", "raw data", "baseline survey", "prevalence_survey_data_1_3.dta")
+data_base = open_and_process_data(path, "dta") # this function opens a Stata dataset (dta) and converts Stata's labelled variables into factors
+```
+
+### 10/66 incidence dataset
+
+```{r}
+path = here::here("Data", "raw data", "fu folder from Matthew", "incidence cohort (all survey outcomes)", "other countries", "full follow up_1_2.dta")
+data_inc = open_and_process_data(path, "dta")
+```
+
+### Subset data
+
+```{r}
+# Select variables of interest:
+varnames_base = data_base %>% 
+  select(houseid2, PARTICID, countryid, centreid, age, gender, rural, Nassets, PMARRY, CARENEED, illnocat, cdem1066, PEDUC, PTOLDDM, PSMOKE, PALCNOW, PALCPAST, PACTIVE, PMEATFRQ, PFISHFRQ, PVEGS, NEO14G, NEO6AU, NEO6AL, NEO6BU, NEO6BL, NEO4E, NEO4F, NOE1, NEO14E, PCVA, medserv, PHOSAD) %>% 
+  names()
+
+varnames_inc = paste0("f_", varnames_base[5:length(varnames_base)])
+varnames_inc = c("HOUSEID" , "PARTICID", "countryid", "centreid" , varnames_inc)
+
+data_base = data_base %>% select_if(names(.) %in% varnames_base)
+data_inc = data_inc %>%  select_if(names(.) %in% varnames_inc)
+```
+
+------------------------------------------------------------------------
+
+# Description of missing data
+
+## Baseline phase
+
+### Proportion missing each variable
+
+```{r, message=FALSE, warning=FALSE, fig.width=8, fig.height=12, fig.cap="Left: Variables. Right: Observations", fig.align='centre'}
+p1 = naniar::gg_miss_var(data_base, show_pct = TRUE)
+p2 = naniar::gg_miss_case(data_base, show_pct = TRUE) + labs(x="Observations")
+grid.arrange(p1, p2, ncol=2)
+```
+
+> Most variables have no missing. **Missingness is concentrated in certain variables** - generally the variables required to compute Parkinson's disease (PD). Most observations have no missing. **Missingness is concentrated in the same people**.
+
+### Matrix plot of missing variables
+
+```{r, message=FALSE, warning=FALSE, results='hide', fig.show='hide'}
+top_missing_vars = VIM::aggr(data_base)[[5]] %>% arrange(desc(Count))
+top_missing_vars = top_missing_vars[top_missing_vars$Count>0, ] # exclude variables with no missing
+top_missing_varlist = c("countryid", dput(top_missing_vars[[1]]))
+```
+
+```{r, message=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+VIM::matrixplot(data_base[, top_missing_varlist], interactive=FALSE, cex.axis=.6) # too many variables
+```
+
+> A matrix plot showing missing in red, higher values of observations in black and lower ones in white. The red zones illustrate that the **pattern of missing variables are often the same and in the same people**. Generally, there doesn't seem to be any patterns, i.e. the black/white ratio is similar for the red and non-red zones.
+
+### Missingness in Parkinson's disease-related variables
+
+```{r, message=FALSE, warning=FALSE}
+# Select variables required to compute PD
+pd_vars = data_base %>% 
+  select(NEO14G, NEO6AU, NEO6AL, NEO6BU, NEO6BL, NEO4E, NEO4F, NOE1, NEO14E, PCVA)
+
+pd_varnames = names(pd_vars)
+pd_varnames
+```
+
+#### Complete cases
+
+```{r, message=FALSE, warning=FALSE}
+miss_case_table(pd_vars)
+```
+
+> Most particpants (92%) have complete data to compute PD, and around 5% are missing five or more variables to compute PD.
+
+#### Percentage of missing per variable
+
+```{r, message=FALSE, warning=FALSE}
+miss_var_summary(pd_vars)
+```
+
+### Missingness relationships
+
+To exclude MCAR and test whether data are MAR, do the following test - create dummy variables for whether a variable is missing (1=missing; 0=observed), then run t-tests and chi-square tests between this variable and other variables in the data to see if the missingness on this variable is related to the values of other variables.
+
+E.g. if women are less likely to share weight data than men, a chi-square test will tell you that the percentage of missing data on weight variable is higher for women than men.
+
+```{r}
+# Create a function that achieves the following
+## 1. Creates a dummy variable for a variable by whether it is missing or not
+## 2. Run chi-square test with categorical variables to test differences in the proportion of missingness by group levels
+## 3. Run t-test with continuous variables (age, PVEGS)
+## 4. Run Mann-Whitney test with non-normal continuous variables (PALCPAST, PALCNOW)
+## The above can be achieved using tableone
+
+vars = varnames_base[5:33]
+factorVars =  c("gender", "rural", "Nassets", "PMARRY", "CARENEED", "illnocat", "cdem1066", "PEDUC",  "PTOLDDM",  "PSMOKE", "PACTIVE", "PMEATFRQ", "PFISHFRQ", "NEO14G", "NEO6AU", "NEO6AL", "NEO6BU", "NEO6BL", "NEO4E", "NEO4F", "NOE1", "NEO14E","PCVA", "medserv", "PHOSAD")
+
+miss_tableone = function(data, missvar){
+  
+  data$missing = factor(if_else(is.na(data[[missvar]]), paste0("Missing\n", missvar), paste0("Observed\n", missvar)))
+  
+  output = tableone::CreateTableOne(vars = vars,
+                           factorVars = factorVars,
+                           strata = "missing",
+                           data = data)
+  # CreateTableOne() tests t-test for continuous, chisq.test for categorical
+  
+  print(output, nonnormal = c("PALCPAST", "PALCNOW"))
+}
+
+```
+
+#### PD-variables
+
+```{r, results="hide"}
+output = lapply(pd_varnames, miss_tableone, data=data_base)
+```
+
+```{r}
+lapply(output, function(x) kbl(x) %>% kable_styling() %>% kable_paper())
+```
+
+#### Other variables
+
+```{r, results="hide"}
+othervars = c("PALCNOW", "PALCPAST", "PSMOKE", "CARENEED", "PVEGS", "PFISHFRQ", "PMEATFRQ", "PACTIVE", "PMARRY", "PEDUC")
+
+output = lapply(othervars, miss_tableone, data=data_base)
+```
+
+```{r}
+lapply(output, function(x) kable(x) %>% kable_styling() %>%  kable_paper())
+```
+
+## Incidence phase
+
+### Proportion missing each variable
+
+```{r, message=FALSE, warning=FALSE, fig.width=8, fig.height=12, fig.cap="Left: Variables. Right: Observations", fig.align='centre'}
+p1 = naniar::gg_miss_var(data_inc, show_pct = TRUE)
+p2 = naniar::gg_miss_case(data_inc, show_pct = TRUE) + labs(x="Observations")
+grid.arrange(p1, p2, ncol=2)
+```
+
+### Matrix plot of missing variables
+
+```{r, message=FALSE, warning=FALSE, results='hide', fig.show='hide'}
+top_missing_vars = VIM::aggr(data_inc)[[5]] %>% arrange(desc(Count))
+top_missing_vars = top_missing_vars[top_missing_vars$Count>0, ] # exclude variables with no missing
+top_missing_varlist = dput(top_missing_vars[[1]])
+```
+
+```{r, message=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+VIM::matrixplot(data_inc[, top_missing_varlist], interactive=FALSE, cex.axis=.6) # too many variables
+```
+
+> A matrix plot showing missing in red, higher values of observations in black and lower ones in white. The red zones illustrate that the **pattern of missing variables are often the same and in the same people**. Additionally, we can see some patterns in the red zone and values of countryid, i.e. red zones are concentrated near the black and certain grey zones wrt to countryid, **suggesting that missingness is related to study site**. There doesn't seem to be any other patterns, i.e. the black/white ratio is similar for the red and non-red zones.
+
+### Missingness in Parkinson's disease-related variables
+
+```{r, message=FALSE, warning=FALSE}
+# Select variables required to compute PD
+pd_vars = data_inc %>% 
+  select(contains("NE"), f_PCVA) %>% 
+  select(-f_CARENEED)
+
+pd_varnames = names(pd_vars)
+pd_varnames
+```
+
+#### Complete cases
+
+```{r, message=FALSE, warning=FALSE}
+miss_case_table(pd_vars)
+```
+
+> Most of the variables required to compute PD is missing in the incidence phase data.
+
+#### Percentage of missing per variable
+
+```{r, message=FALSE, warning=FALSE}
+miss_var_summary(pd_vars)
+```
+
+### Missingness relationships
+
+```{r}
+vars = varnames_inc[5:33]
+factorVars = paste0("f_", factorVars)
+```
+
+#### PD-variables
+
+```{r, results = "hide"}
+output = lapply(pd_varnames, miss_tableone, data=data_inc)
+```
+
+```{r}
+lapply(output, function(x) kbl(x) %>% kable_paper())
+```
+
+------------------------------------------------------------------------
+
+References:
+
+1.  <https://livebook.manning.com/book/r-in-action/chapter-15/21>
+2.  <https://statisticalhorizons.com/sensitivity-analysis>
+3.  <https://bmcmedresmethodol.biomedcentral.com/articles/10.1186/s12874-017-0442-1>
+4.  <https://onlinelibrary.wiley.com/doi/full/10.1111/j.1741-3737.2005.00191.x>

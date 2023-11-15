@@ -104,7 +104,7 @@ summary(meta.output)
 ```{r}
 png("age60_pd_prev_plot.png", width = 30, height = 20, units = "cm", res=500)
 
-forest(meta.output)
+forest(meta.output, digits=0, digits.se=0)
 
 dev.off()
 ```
@@ -132,7 +132,7 @@ summary(meta.output)
 
 png("age60_pnism_prev_plot.png", width = 30, height = 20, units = "cm", res=500)
 
-forest(meta.output)
+forest(meta.output, digits=0, digits.se=0)
 
 dev.off()
 ```
@@ -161,7 +161,7 @@ summary(meta.output)
 
 png("age10_pd_prev_plot.png", width = 30, height = 38, units = "cm", res=500)
 
-forest(meta.output)
+forest(meta.output, digits=0, digits.se=0)
 
 dev.off()
 
@@ -191,7 +191,7 @@ summary(meta.output)
 
 png("age10_pnism_prev_plot.png", width = 30, height = 30, units = "cm", res=500)
 
-forest(meta.output)
+forest(meta.output, digits=0, digits.se=0)
 
 dev.off()
 

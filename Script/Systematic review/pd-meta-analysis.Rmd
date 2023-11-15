@@ -78,39 +78,6 @@ data_tot = data %>%
 # Filter data for 'sex' results
 data_sex = data %>% filter(subgroup=="Sex")
 ```
-
-Compute n and N from data (skip step as already did manual calculation)
-
-```{r, include=FALSE}
-# Process new variables
-data = data %>% 
-  separate(pct_pd, into = c("prop_pd", "prop_ci_pd"), sep = "[()]", extra = "merge") %>% 
-  separate(prev_pd, into = c("prev_pd", "prev_ci_pd"), sep = "[()]", extra = "merge") %>% 
-  separate(pct_pnism, into = c("prop_pnism", "prop_ci_pnism"), sep = "[()]", extra = "merge") %>% 
-  separate(prev_pnism, into = c("prev_pnism", "prev_ci_pnism"), sep = "[()]", extra = "merge") 
-
-### PD
-x = subset(data_tot, (is.na(data_tot[, "N_pd"]) & is.na(data_tot[, "prop_pd"]) & !is.na(data_tot[, "prev_pd"]))) 
-x$N_pd = (x$n_pd*100000)/x$prev_pd
-
-y = subset(data_tot, (is.na(data_tot[, "N_pd"]) & !is.na(data_tot[, "prop_pd"]) & is.na(data_tot[, "prev_pd"]))) 
-y$N_pd = (y$n_pd*100)/y$prop_pd
-
-z = subset(data_tot, (is.na(data_tot[, "n_pd"]) & is.na(data_tot[, "prop_pd"]) & !is.na(data_tot[, "prev_pd"]))) 
-z$n_pd = (z$N_pd*z$prev_pd)/100000
-
-w = subset(data_tot, (is.na(data_tot[, "n_pd"]) & !is.na(data_tot[, "prop_pd"]) & is.na(data_tot[, "prev_pd"]))) 
-w$n_pd = (w$N_pd*w$prop_pd)/100
-
-## Combine results
-results_pd = bind_rows(x, y, z, w, data_tot) %>% 
-  arrange(studyid) %>% 
-  group_by(study, country, urbanrural) %>% 
-  mutate(rowid = row_number()) %>% 
-  filter(rowid==1) %>% 
-  select(-ends_with("pnism"))
-```
-
 ## Meta-analysis and forest plots
 
 ### Prevalence
@@ -140,7 +107,7 @@ summary(meta_pd)
 ```{r}
 png("pd_prev_plot.png", width = 30, height = 20, units = "cm", res=500)
 
-forest(meta_pd)
+forest(meta_pd, digits=0, digits.se=0)
 
 dev.off()
 ```
@@ -172,7 +139,7 @@ summary(meta_pd_sex)
 ```{r}
 png("pd_sex_prev_plot.png", width = 30, height = 25, units = "cm", res=500)
 
-forest(meta_pd_sex)
+forest(meta_pd_sex, digits=0, digits.se=0)
 
 dev.off()
 ```
@@ -206,7 +173,7 @@ summary(meta_pd_age)
 
 png("pd_age_prev_plot1.png", width = 30, height = 25, units = "cm", res=500)
 
-forest(meta_pd_age)
+forest(meta_pd_age, digits=0, digits.se=0)
 
 dev.off()
 ```
@@ -235,7 +202,7 @@ summary(meta_pd)
 
 png("pd_region_prev_plot.png", width = 30, height = 25, units = "cm", res=500)
 
-forest(meta_pd)
+forest(meta_pd, digits=0, digits.se=0)
 
 dev.off()
 ```
@@ -264,7 +231,7 @@ summary(meta_pnism)
 ```{r}
 png("pnism_prev_plot.png", width = 30, height = 14, units = "cm", res=500)
 
-forest(meta_pnism)
+forest(meta_pnism, digits=0, digits.se=0)
 
 dev.off()
 ```
@@ -296,7 +263,7 @@ summary(meta_pnism_sex)
 ```{r}
 png("pnism_sex_prev_plot.png", width = 30, height = 18, units = "cm", res=500)
 
-forest(meta_pnism_sex)
+forest(meta_pnism_sex, digits=0, digits.se=0)
 
 dev.off()
 ```
@@ -319,7 +286,7 @@ summary(meta_pnism)
 
 png("pnism_region_prev_plot.png", width = 30, height = 15, units = "cm", res=500)
 
-forest(meta_pnism)
+forest(meta_pnism, digits=0, digits.se=0)
 
 dev.off()
 ```
@@ -347,7 +314,7 @@ summary(meta_pd_inc)
 ```{r}
 png("pd_inc_plot.png", width = 30, height = 10, units = "cm", res=500)
 
-forest(meta_pd_inc)
+forest(meta_pd_inc, digits=0, digits.se=0)
 
 dev.off()
 ```
